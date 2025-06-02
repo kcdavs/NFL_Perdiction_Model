@@ -1,0 +1,49 @@
+import pandas as pd
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import accuracy_score
+
+# You will have to figure out how to ingest this dataset based on your specific setup 
+games = pd.read_csv("games.csv")
+
+# Filter to seasons 2010 and later
+games = games[games['season'] >= 2010]
+
+# Label: home team win
+games['home_win'] = games['home_score'] > games['away_score']
+
+# Encode categorical fields quickly
+games['roof'] = games['roof'].astype('category').cat.codes
+games['surface'] = games['surface'].astype('category').cat.codes
+games['home_coach'] = games['home_coach'].astype('category').cat.codes
+games['away_coach'] = games['away_coach'].astype('category').cat.codes
+
+# Minimal feature set
+features = [
+    'spread_line', 'home_rest', 'away_rest',
+    'temp', 'wind', 'roof', 'surface',
+    'home_coach', 'away_coach',
+    'season', 'week'
+]
+
+# Drop incomplete rows
+games_clean = games[features + ['home_win']].dropna()
+
+# Split by season — train on all but most recent season
+latest_season = games_clean['season'].max()
+train_df = games_clean[games_clean['season'] < latest_season]
+test_df = games_clean[games_clean['season'] == latest_season]
+
+X_train = train_df[features]
+y_train = train_df['home_win']
+X_test = test_df[features]
+y_test = test_df['home_win']
+
+# Train model
+model = RandomForestClassifier(random_state=42)
+model.fit(X_train, y_train)
+
+# Predict + Evaluate
+y_pred = model.predict(X_test)
+accuracy = accuracy_score(y_test, y_pred)
+
+print(f"Baseline test accuracy on {latest_season}: {accuracy:.2%}")
