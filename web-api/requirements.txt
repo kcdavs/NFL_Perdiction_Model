@@ -1,6 +1,4 @@
-flask
 pandas
-selenium
+requests
 beautifulsoup4
-webdriver-manager
 gunicorn
