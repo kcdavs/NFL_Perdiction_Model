@@ -6,7 +6,8 @@ import sys
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, ROOT)
 
-from scraper import fetch_week_data
+from scraper import scrape_one_week_requests   # or scrape_multiple_weeks_for_season_requests
+
 
 app = Flask(__name__)
 
