@@ -1,43 +1,28 @@
-import os
-import sys
-import traceback
+import os, traceback
 from flask import Flask, Response
+import sys
 
-# 1) Make sure we can import scraper.py from the repo root
+# allow importing scraper.py
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, ROOT)
 
-# 2) Import your existing scraper entry-point
-from scraper import scrape_all_seasons
+from scraper import fetch_week_data
 
 app = Flask(__name__)
 
 @app.route("/")
 def home():
-    return "🟢 API is live. Use /run-scraper to kick off the scraper."
+    return "🟢 API is live – call /scrape/egid/season"
 
-@app.route("/run-scraper")
-def run_scraper():
+@app.route("/scrape/<int:egid>/<int:season>")
+def scrape(egid, season):
     try:
-        # 3) Define the seasons you want to scrape
-        seasons = [
-            (4494, 2018)
-        ]
-        # 4) Run your full scraper (blocks until done)
-        df = scrape_all_seasons(seasons)
-        return Response(
-            f"✅ Scrape complete: fetched {len(df)} rows of data.",
-            mimetype="text/plain"
-        )
+        df = fetch_week_data(egid, season)
+        return Response(f"<pre>{df.to_string(index=False)}</pre>", mimetype="text/html")
     except Exception as e:
-        # 5) On error, return the exception and full traceback
         tb = traceback.format_exc()
-        return Response(
-            f"🛑 Scraper error:\n{e}\n\nTraceback:\n{tb}",
-            status=500,
-            mimetype="text/plain"
-        )
+        return Response(f"❌ Error:\n{e}\n\n{tb}", status=500, mimetype="text/plain")
 
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 3000))
+if __name__=="__main__":
+    port = int(os.environ.get("PORT",3000))
     app.run(host="0.0.0.0", port=port)
