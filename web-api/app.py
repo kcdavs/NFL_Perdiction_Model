@@ -1,29 +1,30 @@
-import os, traceback
+import os, sys, traceback
 from flask import Flask, Response
-import sys
 
-# allow importing scraper.py
+# Make scraper.py importable
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, ROOT)
 
-from scraper import scrape_one_week_requests   # or scrape_multiple_weeks_for_season_requests
-
+# Import the requests-based single-week scraper
+from scraper import scrape_one_week_requests
 
 app = Flask(__name__)
 
 @app.route("/")
 def home():
-    return "🟢 API is live – call /scrape/egid/season"
+    return "🟢 API live. Use /scrape/<egid>/<season> to fetch week data."
 
 @app.route("/scrape/<int:egid>/<int:season>")
-def scrape(egid, season):
+def scrape_week(egid, season):
     try:
-        df = fetch_week_data(egid, season)
-        return Response(f"<pre>{df.to_string(index=False)}</pre>", mimetype="text/html")
+        df = scrape_one_week_requests(egid, season)
+        return Response(f"<pre>{df.to_string(index=False)}</pre>",
+                        mimetype="text/html")
     except Exception as e:
         tb = traceback.format_exc()
-        return Response(f"❌ Error:\n{e}\n\n{tb}", status=500, mimetype="text/plain")
+        return Response(f"❌ Scraper error:\n{e}\n\n{tb}",
+                        status=500, mimetype="text/plain")
 
-if __name__=="__main__":
-    port = int(os.environ.get("PORT",3000))
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 3000))
     app.run(host="0.0.0.0", port=port)
