@@ -103,8 +103,7 @@ def scrape_bmr_spread_requests(url, season, week):
     # season, week, outcome, date, time + the first (max_len-5) of base_cols
     cols = ["season", "week", "outcome", "date", "time"] \
            + base_cols[: max_len - 5]
-    df = pd.DataFrame(all_data, columns=cols)
-    xlo
+    df = pd.DataFrame(all_data, columns=cols
     return df
 
 
