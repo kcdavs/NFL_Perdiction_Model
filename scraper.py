@@ -111,7 +111,7 @@ def scrape_one_week_requests(egid, season_id):
     """Wrapper that returns a DataFrame exactly as scrape_multiple_weeks_for_season did."""
     week_label = get_week_label(egid, season_id)
     url = f"https://odds.bookmakersreview.com/nfl/?egid={egid}&seid={season_id}"
-    return scrape_bmr_spread_requests(url, season_id
+    return scrape_bmr_spread_requests(url, season_id, week_label)
 
 
 # If you still want your multi-week function, just swap in the new one:
