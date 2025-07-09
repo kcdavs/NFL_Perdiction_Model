@@ -53,3 +53,37 @@ def raw_html(egid, season):
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 3000))
     app.run(host="0.0.0.0", port=port)
+
+@app.route("/check-static-odds/<int:egid>/<int:season>")
+def check_static_odds(egid, season):
+    try:
+        # 1) Build the URL
+        url = f"https://odds.bookmakersreview.com/nfl/?egid={egid}&seid={season}"
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/115.0.0.0 Safari/537.36"
+            )
+        }
+        # 2) Fetch static HTML
+        resp = requests.get(url, headers=headers, timeout=15)
+        resp.raise_for_status()
+        soup = BeautifulSoup(resp.text, "html.parser")
+
+        # 3) Grab all the odds spans
+        spans = soup.select("span.odd-2T5by")
+        texts = [s.get_text(strip=True) for s in spans]
+
+        # 4) Build a concise report
+        report = [f"Found {len(spans)} <span class='odd-2T5by'> elements"]
+        report += texts[:20] or ["(none)"]
+        if len(texts) > 20:
+            report.append("…(only showing first 20)")
+
+        return Response("\n".join(report), mimetype="text/plain")
+    except Exception as e:
+        tb = traceback.format_exc()
+        return Response(f"❌ Error:\n{e}\n\n{tb}",
+                        status=500, mimetype="text/plain")
+
