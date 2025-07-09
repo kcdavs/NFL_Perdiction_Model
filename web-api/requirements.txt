@@ -4,3 +4,4 @@ requests
 beautifulsoup4
 gunicorn
 requests-html
+lxml_html_clean
