@@ -32,7 +32,6 @@ def load_and_pivot_acl(filepath, label):
     ol.columns = ["eid", "partid", "opening_adj", "opening_ap"]
 
     # Pivot current lines
-    paid_vals = sorted(cl["paid"].unique())
     cl_adj = cl.pivot_table(index=["eid", "partid"], columns="paid", values="adj").add_prefix("adj_")
     cl_ap = cl.pivot_table(index=["eid", "partid"], columns="paid", values="ap").add_prefix("ap_")
     pivot_df = cl_adj.join(cl_ap).reset_index()
@@ -47,4 +46,15 @@ def load_and_pivot_acl(filepath, label):
     # Add team name
     df["team"] = df["partid"].map(team_map)
     df["jsons"] = label
-    return df
+
+    # Reorder columns
+    ap_adj_cols = sorted([col for col in df.columns if col.startswith("ap_") and col not in ("opening_ap",)])
+    adj_cols = sorted([col for col in df.columns if col.startswith("adj_") and col not in ("opening_adj",)])
+
+    ordered_columns = (
+        ["jsons", "eid", "partid", "team", "perc", "opening_adj", "opening_ap"]
+        + ap_adj_cols
+        + adj_cols
+    )
+
+    return df[ordered_columns]
