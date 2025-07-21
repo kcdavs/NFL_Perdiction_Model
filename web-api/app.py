@@ -2,7 +2,8 @@
 
 import os
 import traceback
-from flask import Flask, Response, request
+from flask import Flask, Response, request, jsonify
+from scraper import scrape_one_week_requests
 import requests
 
 app = Flask(__name__)
@@ -16,6 +17,19 @@ def home():
         "  /fetch-json?url=https://cache.bmr.bbsi.com/odds/getLines"
         "?seid=4494&egid=10&market=all&period=reg\n"
     )
+
+@app.route("/scrape/<int:egid>/<int:season>")
+def scrape_week(egid, season):
+    try:
+        df = scrape_one_week_requests(egid, season)
+        return df.to_json(orient="records")  # JSON array of row objects
+    except Exception as e:
+        tb = traceback.format_exc()
+        return Response(
+            f"❌ Error scraping:\n{e}\n\n{tb}",
+            status=500,
+            mimetype="text/plain"
+        )
 
 @app.route("/fetch-json")
 def fetch_json():
