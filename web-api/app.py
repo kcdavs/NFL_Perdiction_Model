@@ -1,10 +1,25 @@
+import os
+import traceback
 import requests
-from tabulate import load_and_pivot_acl
 import tempfile
+import pandas as pd
+from flask import Flask, Response, request
+from tabulate import load_and_pivot_acl  # your Pandas-based function
+
+app = Flask(__name__)
+
+@app.route("/")
+def home():
+    return (
+        "🟢 NFL Odds Scraper Running!\n\n"
+        "Visit /tabulate to see tabulated odds using raw URLs from GitHub.\n"
+        "Make sure your GitHub repo has: urls/10gameURL.txt and 6gameURL.txt\n"
+    )
 
 @app.route("/tabulate")
 def tabulate_from_github():
     try:
+        # 🔁 Update this to match your GitHub username/repo
         GITHUB_BASE = "https://raw.githubusercontent.com/kcdavs/NFL-Gambling-Addiction-ml/main/urls/"
 
         files = [("10gameURL.txt", "10games"), ("6gameURL.txt", "6games")]
@@ -30,12 +45,18 @@ def tabulate_from_github():
             df = load_and_pivot_acl(tmp_path, label)
             dfs.append(df)
 
-        from functools import reduce
-        final_df = reduce(lambda a, b: a.unionByName(b, allowMissingColumns=True), dfs)
-        pdf = final_df.orderBy("eid", "partid").toPandas()
+        # ✅ Merge both sets using Pandas
+        final_df = pd.concat(dfs, ignore_index=True)
+        final_df = final_df.sort_values(["eid", "partid"])
 
-        return Response(pdf.to_csv(index=False), mimetype="text/csv")
+        # ✅ Return as CSV
+        return Response(final_df.to_csv(index=False), mimetype="text/csv")
 
     except Exception as e:
-        return Response(f"❌ Error: {e}", status=500)
+        tb = traceback.format_exc()
+        return Response(f"❌ Error:\n{e}\n\n{tb}", status=500, mimetype="text/plain")
 
+# 🔚 Required for local testing
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 3000))
+    app.run(host="0.0.0.0", port=port)
