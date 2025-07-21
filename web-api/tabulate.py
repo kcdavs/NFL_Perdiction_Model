@@ -1,5 +1,6 @@
 import pandas as pd
 import json
+import re
 
 def load_and_pivot_acl(filepath, label):
     # Static partid → team mapping
@@ -47,14 +48,29 @@ def load_and_pivot_acl(filepath, label):
     df["team"] = df["partid"].map(team_map)
     df["jsons"] = label
 
-    # Reorder columns
-    ap_adj_cols = sorted([col for col in df.columns if col.startswith("ap_") and col not in ("opening_ap",)])
-    adj_cols = sorted([col for col in df.columns if col.startswith("adj_") and col not in ("opening_adj",)])
+    # Metadata columns
+    metadata = ["jsons", "eid", "partid", "team", "perc", "opening_adj", "opening_ap"]
 
-    ordered_columns = (
-        ["jsons", "eid", "partid", "team", "perc", "opening_adj", "opening_ap"]
-        + ap_adj_cols
-        + adj_cols
-    )
+    # Extract all adj/ap columns that are NOT the opening ones
+    adj_cols = [col for col in df.columns if col.startswith("adj_") and col != "opening_adj"]
+    ap_cols = [col for col in df.columns if col.startswith("ap_") and col != "opening_ap"]
 
-    return df[ordered_columns]
+    # Extract suffixes and sort numerically
+    suffixes = sorted(set(
+        re.sub(r"^\D+_", "", col)
+        for col in adj_cols + ap_cols
+    ), key=lambda x: int(x) if x.isdigit() else x)
+
+    # Alternate adj/ap
+    interleaved_cols = []
+    for suffix in suffixes:
+        adj = f"adj_{suffix}"
+        ap = f"ap_{suffix}"
+        if adj in df.columns:
+            interleaved_cols.append(adj)
+        if ap in df.columns:
+            interleaved_cols.append(ap)
+
+    # Final column order
+    final_columns = metadata + interleaved_cols
+    return df[final_columns]
