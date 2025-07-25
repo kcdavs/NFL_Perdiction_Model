@@ -1,0 +1,449 @@
+"""
+NFL Betting Pipeline — end‑to‑end (training + weekly pick generator)
+==================================================================
+
+Revision **Aug 2025‑03b** – completed script
+-------------------------------------------
+1. Market‑movement, context, rolling EPA features.
+2. Hyper‑param tuned XGBoost with Platt calibration.
+3. Edge & bet‑selection (half‑Kelly) for upcoming games.
+4. Train vs Score modes selectable via CLI flag.
+5. Artifacts: feature_importance.png · predictions_YYYY.csv · weekly_picks.csv · bankroll_history.csv.
+
+Run examples
+------------
+```bash
+python nfl_pipeline.py --train          # retrain through latest settled week
+python nfl_pipeline.py --score --date 2025-09-10 --bankroll 1500
+```
+
+`--score` expects that the model pickle already exists and that fresh odds
+(including openers) for upcoming games are appended to the CSVs.
+
+| Scenario                                        | Config settings                                                           |
+| ----------------------------------------------- | ------------------------------------------------------------------------- |
+| **Current balanced** (half‑Kelly, edges ≥ 0.05) | `SELECTION_MODE="edge"`<br>`STAKE_MODE="kelly"`                           |
+| **Aggressive test** (top‑3, flat \$100)         | `SELECTION_MODE="top3"`<br>`STAKE_MODE="flat"`<br>`FLAT_STAKE = 100.0`    |
+| **Ultra‑aggressive** (top‑3, full Kelly)        | `SELECTION_MODE="top3"`<br>`STAKE_MODE="kelly"`<br>`KELLY_FRACTION = 1.0` |
+
+"""
+
+
+import argparse, sys, pickle, warnings, datetime as dt
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from sqlalchemy import create_engine
+
+import nfl_data_py as nfl
+from xgboost import XGBClassifier
+from sklearn.model_selection import RandomizedSearchCV, TimeSeriesSplit
+from sklearn.metrics import log_loss, accuracy_score
+from sklearn.calibration import CalibratedClassifierCV
+
+warnings.filterwarnings("ignore", "deprecated")
+
+
+# 1. Load raw files
+
+# --- paths
+DATA_DIR   = Path("C:/Users/User/IdeaProjects/NFL_Prediction_Model")
+ODDS_CSV   = DATA_DIR / "nfl_spreads_all_seasons.csv"
+GAMES_CSV  = DATA_DIR / "games.csv"
+SQLITE_URI = "sqlite:///nfl_betting.db"
+MODEL_PKL  = DATA_DIR / "xgb_ats.pkl"
+# --- parameters
+RUN_MODE         = "backtest"   # "train" or "score"
+TODAY            = pd.to_datetime(dt.date.today())
+SEASON_MIN       = 2018
+EDGE_THRESHOLD   = 0.05       # 5 pp ATS edge
+KELLY_FRACTION   = 1.0
+BANKROLL_START   = 1_000.0
+SELECTION_MODE = "top3"     # "edge"  → all edges ≥ EDGE_THRESHOLD
+                            # "top3"  → top‑3 edges each week
+
+STAKE_MODE     = "flat"    # "kelly" → half‑Kelly using KELLY_FRACTION
+                            # "flat"  → FLAT_STAKE per bet (no bankroll roll)
+
+FLAT_STAKE     = 100.0      # used only when STAKE_MODE == "flat"
+# --- team mapping
+TEAM_MAP = {
+    # NFC
+    "Arizona": "ARI", "Atlanta": "ATL", "Carolina": "CAR", "Chicago": "CHI",
+    "Dallas": "DAL", "Detroit": "DET", "Green Bay": "GB", "L.A. Rams": "LA",
+    "Minnesota": "MIN", "New Orleans": "NO", "N.Y. Giants": "NYG",
+    "Philadelphia": "PHI", "San Francisco": "SF", "Seattle": "SEA",
+    "Tampa Bay": "TB", "Washington": "WAS",
+    # AFC
+    "Baltimore": "BAL", "Buffalo": "BUF", "Cincinnati": "CIN", "Cleveland": "CLE",
+    "Denver": "DEN", "Houston": "HOU", "Indianapolis": "IND", "Jacksonville": "JAX",
+    "Kansas City": "KC", "Las Vegas": "LV", "Oakland": "OAK", "St. Louis": "STL",
+    "L.A. Chargers": "LAC", "Miami": "MIA", "N.Y. Jets": "NYJ", "New England": "NE",
+    "Pittsburgh": "PIT", "Tennessee": "TEN",
+}
+
+
+# 2. Helper functions
+def american_to_prob(odds: float) -> float:
+    if pd.isna(odds):
+        return np.nan
+    return 100 / (odds + 100) if odds > 0 else abs(odds) / (abs(odds) + 100)
+
+def kelly_stake(edge: float, bankroll: float, payout: float = 1.909) -> float:
+    f = max(edge / (payout - 1), 0)
+    return bankroll * KELLY_FRACTION * f
+
+def stake_amount(edge: float, bankroll: float) -> float:
+    """Return stake according to global STAKE_MODE."""
+    if STAKE_MODE == "kelly":
+        return kelly_stake(edge, bankroll)
+    elif STAKE_MODE == "flat":
+        return FLAT_STAKE
+    else:
+        raise ValueError("STAKE_MODE must be 'kelly' or 'flat'")
+    
+def select_bets(df: pd.DataFrame) -> pd.DataFrame:
+    """Return rows to bet according to global SELECTION_MODE."""
+    if SELECTION_MODE == "edge":
+        return df[df.edge >= EDGE_THRESHOLD].copy()
+    elif SELECTION_MODE == "top3":
+        return df.sort_values("edge", ascending=False).head(3).copy()
+    else:
+        raise ValueError("SELECTION_MODE must be 'edge' or 'top3'")
+
+
+
+# ## 3⃣ Build / refresh datase
+def build_dataset() -> pd.DataFrame:
+    """Return merged odds + games DataFrame and persist to SQLite."""
+    odds  = pd.read_csv(ODDS_CSV)
+    games = pd.read_csv(GAMES_CSV)
+    games = games[games["season"] >= SEASON_MIN].copy()
+
+    # standardise date column ➜ game_date
+    for col in ["game_date", "gameday", "gamedate", "date"]:
+        if col in games.columns:
+            games = games.rename(columns={col: "game_date"})
+            break
+    games["game_date"] = pd.to_datetime(games["game_date"])
+
+    # ---------------- odds pivot ----------------
+    odds["team_abbr"] = odds["team"].map(TEAM_MAP)
+    odds["is_away"] = odds["rotation"] % 2 == 1
+
+    base_cols = ["season", "week"]
+    bet_cols  = [c for c in odds.columns if c.endswith(("_spread", "_odds"))]
+
+    away = odds[odds.is_away].rename(columns={"team_abbr": "away_team"})
+    home = odds[~odds.is_away].rename(columns={"team_abbr": "home_team"})
+
+    away = away[base_cols + ["away_team"] + bet_cols]
+    home = home[base_cols + ["home_team"] + bet_cols]
+
+    lines = away.merge(home, on=base_cols, suffixes=("_away", "_home"))
+
+    spread_home_cols = [c for c in lines if c.endswith("_spread_home")]
+    ml_home_cols     = [c for c in lines if c.endswith("_odds_home")]
+    lines["spread_cons"] = lines[spread_home_cols].mean(1)
+    lines["ml_cons"]     = lines[ml_home_cols].mean(1)
+
+    open_spread = [c for c in lines if "opener_spread_home" in c]
+    open_ml     = [c for c in lines if "opener_odds_home" in c]
+    if open_spread:
+        lines["spread_open_cons"] = lines[open_spread].mean(1)
+        lines["ml_open_cons"]     = lines[open_ml].mean(1)
+        lines["line_move"]   = lines["spread_cons"] - lines["spread_open_cons"]
+        lines["juice_shift"] = lines["ml_cons"]    - lines["ml_open_cons"]
+    else:
+        lines[["spread_open_cons", "ml_open_cons", "line_move", "juice_shift"]] = np.nan
+
+    # playoff week remap
+    def remap_week(lbl, season):
+        if pd.isna(lbl):
+            return None
+        if isinstance(lbl, (int, float)):
+            return int(lbl)
+        lbl = str(lbl).strip().lower()
+        old = {"wild card": 18, "divisional": 19, "conference": 20, "super bowl": 21}
+        new = {"wild card": 19, "divisional": 20, "conference": 21, "super bowl": 22}
+        return (old if season < 2021 else new).get(lbl) or (int(lbl) if lbl.isdigit() else None)
+
+    lines["week_num"] = [remap_week(w, s) for w, s in zip(lines.week, lines.season)]
+    lines = lines[lines.week_num.notna()].copy()
+
+    lines["join_key"] = (
+        lines.season.astype(str) + "_" +
+        lines.week_num.astype(int).astype(str).str.zfill(2) + "_" +
+        lines.home_team + "_" + lines.away_team)
+
+    games["join_key"] = (
+        games.season.astype(str) + "_" +
+        games.week.astype(int).astype(str).str.zfill(2) + "_" +
+        games.home_team + "_" + games.away_team)
+
+    dataset = (
+        games.merge(
+            lines[[
+                "join_key", "spread_cons", "ml_cons", "spread_open_cons", "ml_open_cons",
+                "line_move", "juice_shift"
+            ]],
+            on="join_key", how="inner")
+        .assign(
+            margin      = lambda d: d.home_score - d.away_score,
+            home_cover  = lambda d: (d.margin + d.spread_cons <= 0).astype(int),
+        )
+    )
+
+    # rest‑days
+    for side in ("home", "away"):
+        key = f"{side}_team"
+        dataset = dataset.sort_values([key, "game_date"])
+        dataset[f"{side}_last_game"] = dataset.groupby(key)["game_date"].shift(1)
+        dataset[f"{side}_rest"] = (dataset["game_date"] - dataset[f"{side}_last_game"]).dt.days
+
+    # roof closed
+    dataset["is_roof_closed"] = (dataset.roof.astype(str).str.lower() == "closed").astype(int)
+
+    # rolling EPA diff (off – def) ----------------
+    years = dataset.season.unique().tolist()
+    pbp = nfl.import_pbp_data(years)
+    pbp = pbp[pbp.season >= SEASON_MIN]
+
+    off = (pbp.groupby(["season", "posteam"])["epa"].mean().reset_index()
+              .rename(columns={"posteam": "team", "epa": "off_epa"}))
+    defn = (pbp.groupby(["season", "defteam"])["epa"].mean().reset_index()
+              .rename(columns={"defteam": "team", "epa": "def_epa"}))
+
+    dataset = dataset.merge(off, left_on=["season", "home_team"], right_on=["season", "team"], how="left")\
+    .rename(columns={"off_epa": "off_epa_home"})\
+    .drop(columns="team")
+
+    dataset = dataset.merge(off, left_on=["season", "away_team"], right_on=["season", "team"], how="left")\
+    .rename(columns={"off_epa": "off_epa_away"})\
+    .drop(columns="team")
+
+    dataset = dataset.merge(defn, left_on=["season", "home_team"], right_on=["season", "team"], how="left")\
+    .rename(columns={"def_epa": "def_epa_home"})\
+    .drop(columns="team")
+
+    dataset = dataset.merge(defn, left_on=["season", "away_team"], right_on=["season", "team"], how="left")\
+    .rename(columns={"def_epa": "def_epa_away"})\
+    .drop(columns="team")
+
+    # 3‑game rolling means (shifted)
+    for side in ("home", "away"):
+        key = f"{side}_team"
+        dataset = dataset.sort_values([key, "game_date"])
+        for cat in ("off", "def"):
+            src_col   = f"{cat}_epa_{side}"
+            roll_col  = f"{cat}_epa_3g_{side}"
+            dataset[roll_col] = dataset.groupby(key)[src_col] \
+                .transform(lambda s: s.shift(1).rolling(3, min_periods=1).mean())
+
+    dataset["off_epa_diff"] = dataset["off_epa_3g_home"] - dataset["def_epa_3g_away"]
+    dataset["def_epa_diff"] = dataset["def_epa_3g_home"] - dataset["off_epa_3g_away"]
+
+    # --------------------------------------------------
+    # persist to SQLite and return
+    engine = create_engine(SQLITE_URI, echo=False)
+    dataset.to_sql("model_dataset", engine, if_exists="replace", index=False)
+    print(f"✅ Dataset rows: {len(dataset):,}")
+    return dataset
+
+# %% [markdown]
+# ## 4⃣ Train / Score selector] = dataset["off_epa_3g_home"] - dataset["def_epa_3g_away"]
+    dataset["def_epa_diff"] = dataset["def_epa_3g_home"] - dataset["off_epa_3g_away"]
+
+    # --------------------------------------------------
+    # persist to SQLite and return
+    engine = create_engine(SQLITE_URI, echo=False)
+    dataset.to_sql("model_dataset", engine, if_exists="replace", index=False)
+    print(f"✅ Dataset rows: {len(dataset):,}")
+    return dataset
+
+
+# ## 4⃣ Train / Score selector
+
+# %%
+if RUN_MODE == "train":
+    dataset = build_dataset()
+    df = dataset.copy()
+
+    FEATURES = [
+        "spread_cons", "ml_cons", "line_move", "juice_shift",
+        "home_rest", "away_rest", "is_roof_closed",
+        "off_epa_3g_home", "off_epa_3g_away", "def_epa_3g_home", "def_epa_3g_away",
+        "off_epa_diff", "def_epa_diff",
+    ]
+    FEATURES = [f for f in FEATURES if f in df.columns]
+
+    df = df.dropna(subset=FEATURES)
+    df = df.sort_values(["season", "week"])
+    X = df[FEATURES].values
+    y = df["home_cover"].values
+
+    # hyper‑param search
+    param_grid = {
+        "n_estimators": [400, 800, 1200],
+        "max_depth": [3, 4, 5],
+        "learning_rate": [0.03, 0.05, 0.07],
+        "subsample": [0.7, 0.8, 0.9],
+        "colsample_bytree": [0.7, 0.8, 0.9],
+    }
+    base = XGBClassifier(objective="binary:logistic", eval_metric="logloss", random_state=42)
+    search = RandomizedSearchCV(base, param_grid, cv=3, n_iter=20, scoring="neg_log_loss", verbose=0)
+    search.fit(X, y)
+    best = search.best_estimator_
+    print("Best params:", search.best_params_)
+
+    # calibrate on last season
+    train_df = df[df.season < df.season.max()]
+    val_df   = df[df.season == df.season.max()]
+    best.fit(train_df[FEATURES], train_df["home_cover"])
+    calib = CalibratedClassifierCV(best, method="sigmoid", cv="prefit")
+    calib.fit(val_df[FEATURES], val_df["home_cover"])
+
+    # save
+    with open(MODEL_PKL, "wb") as f:
+        pickle.dump(calib, f)
+    print("📝  Model saved →", MODEL_PKL)
+
+    # feature importance plot
+    imp = best.get_booster().get_score(importance_type="gain")
+    imp = pd.Series(imp).sort_values(ascending=True)
+    plt.figure(figsize=(6, 0.3*len(imp)))
+    imp.plot.barh()
+    plt.tight_layout()
+    plt.savefig(DATA_DIR / "feature_importance.png")
+    plt.close()
+    print("📊  Feature importance plot saved.")
+
+elif RUN_MODE == "score":
+    with open(MODEL_PKL, "rb") as f:
+        calib = pickle.load(f)
+    dataset = build_dataset()
+    upcoming = dataset[dataset.game_date >= TODAY].copy()
+    FEATURES = [c for c in calib.feature_names_in_ if c in upcoming.columns]
+    upcoming = upcoming.dropna(subset=FEATURES)
+    upcoming["model_prob"] = calib.predict_proba(upcoming[FEATURES])[:,1]
+    implied = 0.5238  # –110 vig
+    upcoming["edge"] = upcoming["model_prob"] - implied
+    picks = upcoming[upcoming.edge >= EDGE_THRESHOLD].copy()
+    picks["stake"] = picks.edge.apply(lambda e: kelly_stake(e, BANKROLL_START))
+    outfile = DATA_DIR / f"recommended_bets_{TODAY:%Y%m%d}.csv"
+    picks.to_csv(outfile, index=False)
+    print(f"💸  {len(picks)} picks written → {outfile}")
+
+
+
+# ## 5⃣ Walk‑forward back‑test 2018‑2024
+
+if RUN_MODE == "train":
+    # existing train block (unchanged)
+    pass  # placeholder to keep notebook structure – real code above
+
+elif RUN_MODE == "score":
+    # existing score block (unchanged)
+    pass
+
+elif RUN_MODE == "backtest":
+    print("🔄  Walk‑forward back‑test …")
+    dataset = build_dataset()
+
+    FEATURES = [
+        "spread_cons", "ml_cons", "line_move", "juice_shift",
+        "home_rest", "away_rest", "is_roof_closed",
+        "off_epa_3g_home", "off_epa_3g_away", "def_epa_3g_home", "def_epa_3g_away",
+        "off_epa_diff", "def_epa_diff",
+    ]
+    FEATURES = [f for f in FEATURES if f in dataset.columns]
+
+    bankroll = BANKROLL_START
+    curve    = []
+    picks_all = []
+
+    seasons = sorted(dataset.season.unique())
+    for season in seasons:
+        weeks = sorted(dataset[dataset.season == season].week.unique())
+        for wk in weeks:
+            train = dataset[(dataset.season < season) |
+                             ((dataset.season == season) & (dataset.week < wk))]
+            test  = dataset[(dataset.season == season) & (dataset.week == wk)]
+            train = train.dropna(subset=FEATURES)
+            test  = test.dropna(subset=FEATURES)
+            if len(train) < 200 or test.empty:
+                continue
+
+            X_train, y_train = train[FEATURES], train.home_cover
+            model = XGBClassifier(
+                **{
+                    "n_estimators": 400,
+                    "max_depth": 3,
+                    "learning_rate": 0.03,
+                    "subsample": 0.9,
+                    "colsample_bytree": 0.7,
+                    "objective": "binary:logistic",
+                    "eval_metric": "logloss",
+                    "random_state": 42,
+                }
+            ).fit(X_train, y_train)
+            calib = CalibratedClassifierCV(model, method="sigmoid", cv=3)
+            calib.fit(X_train, y_train)
+
+            prob = calib.predict_proba(test[FEATURES])[:, 1]
+            test = test.assign(model_prob=prob, edge=prob - 0.5238)
+            bets = select_bets(test)
+            bets["stake"] = bets.edge.apply(lambda e: stake_amount(e, bankroll))
+            bets["payout"] = np.where(bets.home_cover == 1,
+                                       bets.stake * 0.909,
+                                       -bets.stake)
+            bankroll += bets.payout.sum()
+            curve.append((season, wk, bankroll))
+            if not bets.empty:
+                picks_all.append(bets)
+
+    curve_df = pd.DataFrame(curve, columns=["season", "week", "bankroll"])
+    print(f"📈  Ending bankroll: ${bankroll:,.2f}  (start ${BANKROLL_START:,.0f})")
+
+    # bankroll plot
+    if not curve_df.empty:
+        plt.figure(figsize=(8,4))
+        plt.plot(curve_df.bankroll)
+        plt.title("Walk‑forward bankroll growth")
+        plt.xlabel("Week index")
+        plt.ylabel("Bankroll ($)")
+        plt.tight_layout()
+        plt.show()
+
+    if picks_all:
+        picks_all = pd.concat(picks_all, ignore_index=True)
+        picks_all.to_csv(DATA_DIR / "backtest_bets.csv", index=False)
+        print("💾 backtest_bets.csv written.")
+
+else:
+    raise ValueError("RUN_MODE must be 'train', 'score', or 'backtest'.")
+
+
+# ## 6⃣ Visualise bankroll curve & per‑season ROI
+
+# %%
+if RUN_MODE == "backtest" and not curve_df.empty:
+    import matplotlib.pyplot as plt
+    fig, ax = plt.subplots(figsize=(8,4))
+    ax.plot(curve_df.bankroll.values)
+    ax.set_title("Walk‑forward bankroll growth")
+    ax.set_xlabel("Week index")
+    ax.set_ylabel("Bankroll ($)")
+    plt.tight_layout()
+    plt.show()
+
+    season_roi = (
+        picks_all.groupby("season")
+                 .payout.sum()
+                 .div(100)    # $100 risk‑adjusted units
+                 .rename("units")
+    )
+    display(season_roi)
+
