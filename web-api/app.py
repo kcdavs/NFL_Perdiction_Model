@@ -58,9 +58,21 @@ def scrape_and_push_week(year, week):
     try:
         base_eid = 3452654  # Adjust this if needed
         if year == 2018 and week == 1:
-            eids = [3452654 + 2 * i for i in range(5)] + list(range(3452663, 3452674))
+            eids = [3452654, 3452656, 3452658, 3452660, 3452662] + list(range(3452663, 3452674))
         else:
-            eids = list(range(base_eid + 16 * (week - 1), base_eid + 16 * week))
+            season_start_eids = {
+                2018: 3452674,
+                2019: 3452942,
+                2020: 3453230,
+                2021: 3453518,
+                2022: 3453806,
+                2023: 3454094
+            }
+            base_eid = season_start_eids.get(year)
+            if base_eid is None:
+                return Response(f"❌ No base EID defined for season {year}", status=400)
+            
+            eids = list(range(base_eid + 16 * (week - 2), base_eid + 16 * (week - 1)))  # offset by 1 because week 1 is special
 
 
         eid_list = ",".join(map(str, eids))
