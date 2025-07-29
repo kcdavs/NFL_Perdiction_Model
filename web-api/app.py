@@ -57,7 +57,11 @@ def tabulate_from_github():
 def scrape_and_push_week(year, week):
     try:
         base_eid = 3452654  # Adjust this if needed
-        eids = list(range(base_eid + 16 * (week - 1), base_eid + 16 * week))
+        if year == 2018 and week == 1:
+            eids = [3452654 + 2 * i for i in range(5)] + list(range(3452663, 3452674))
+        else:
+            eids = list(range(base_eid + 16 * (week - 1), base_eid + 16 * week))
+
 
         eid_list = ",".join(map(str, eids))
         paid_list = ",".join(map(str, [8, 9, 10, 123, 44, 29, 16, 130, 54, 82, 36, 20, 127, 28, 84]))
