@@ -5,7 +5,8 @@ import tempfile
 import pandas as pd
 from flask import Flask, Response, request
 from tabulate import load_and_pivot_acl
-from github_writer import push_csv_to_github  # ✅ move this here
+from github_writer import push_csv_to_github
+from fetch_capture import fetch_odds_json_urls
 
 app = Flask(__name__)
 
@@ -13,8 +14,10 @@ app = Flask(__name__)
 def home():
     return (
         "🟢 NFL Odds Scraper Running!\n\n"
-        "Visit /tabulate to see tabulated odds using raw URLs from GitHub.\n"
-        "Make sure your GitHub repo has: urls/10gameURL.txt and 6gameURL.txt\n"
+        "Endpoints:\n"
+        "/tabulate – uses URLs from GitHub\n"
+        "/scrape/<year>/<week> – fetch and push to GitHub\n"
+        "/fetch/<year>/<week> – display JSON fetch URLs in browser\n"
     )
 
 @app.route("/tabulate")
@@ -51,12 +54,9 @@ def tabulate_from_github():
         tb = traceback.format_exc()
         return Response(f"❌ Error:\n{e}\n\n{tb}", status=500, mimetype="text/plain")
 
-
-# ✅ SCRAPE ROUTE GOES HERE — not after __main__
 @app.route("/scrape/<int:year>/<int:week>")
 def scrape_and_push_week(year, week):
     try:
-        base_eid = 3452654  # Adjust this if needed
         if year == 2018 and week == 1:
             eids = [3452654, 3452656, 3452658, 3452660, 3452662] + list(range(3452663, 3452674))
         else:
@@ -71,9 +71,7 @@ def scrape_and_push_week(year, week):
             base_eid = season_start_eids.get(year)
             if base_eid is None:
                 return Response(f"❌ No base EID defined for season {year}", status=400)
-            
-            eids = list(range(base_eid + 16 * (week - 2), base_eid + 16 * (week - 1)))  # offset by 1 because week 1 is special
-
+            eids = list(range(base_eid + 16 * (week - 2), base_eid + 16 * (week - 1)))
 
         eid_list = ",".join(map(str, eids))
         paid_list = ",".join(map(str, [8, 9, 10, 123, 44, 29, 16, 130, 54, 82, 36, 20, 127, 28, 84]))
@@ -105,20 +103,17 @@ def scrape_and_push_week(year, week):
 
         df = load_and_pivot_acl(tmp_path, f"{year}_week{week}")
         csv_data = df.to_csv(index=False)
-
         push_csv_to_github(csv_data, year, week)
+
         return Response(f"✅ Week {week} ({year}) pushed to GitHub", mimetype="text/plain")
 
     except Exception as e:
         tb = traceback.format_exc()
         return Response(f"❌ Error:\n{e}\n\n{tb}", status=500, mimetype="text/plain")
 
-from fetch_capture import fetch_odds_json_urls
-
 @app.route("/fetch/<int:year>/<int:week>")
 def fetch_urls_for_week(year, week):
     try:
-        # TEMP: Static mapping — replace later with actual lookup
         seid_map = {
             2018: 4494,
             2019: 4520,
@@ -127,8 +122,6 @@ def fetch_urls_for_week(year, week):
             2022: 4598,
             2023: 4624
         }
-
-        egid_offset = 9  # First game is egid=10, so week 1 = egid 10
         seid = seid_map.get(year)
         egid = 10 + (week - 1)
 
@@ -142,42 +135,9 @@ def fetch_urls_for_week(year, week):
         return Response("\n\n".join(urls), mimetype="text/plain")
 
     except Exception as e:
-        import traceback
-        return Response(f"❌ Error:\n{e}\n\n{traceback.format_exc()}", status=500, mimetype="text/plain")
-from fetch_capture import fetch_odds_json_urls
+        tb = traceback.format_exc()
+        return Response(f"❌ Error:\n{e}\n\n{tb}", status=500, mimetype="text/plain")
 
-@app.route("/fetch/<int:year>/<int:week>")
-def fetch_urls_for_week(year, week):
-    try:
-        # TEMP: Static mapping — replace later with actual lookup
-        seid_map = {
-            2018: 4494,
-            2019: 4520,
-            2020: 4546,
-            2021: 4572,
-            2022: 4598,
-            2023: 4624
-        }
-
-        egid_offset = 9  # First game is egid=10, so week 1 = egid 10
-        seid = seid_map.get(year)
-        egid = 10 + (week - 1)
-
-        if seid is None:
-            return Response(f"No SEID for year {year}", status=400)
-
-        urls = fetch_odds_json_urls(seid, egid)
-        if not urls:
-            return Response("No fetch URLs found.", mimetype="text/plain")
-
-        return Response("\n\n".join(urls), mimetype="text/plain")
-
-    except Exception as e:
-        import traceback
-        return Response(f"❌ Error:\n{e}\n\n{traceback.format_exc()}", status=500, mimetype="text/plain")
-
-
-# ✅ Keep this at the bottom
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 3000))
     app.run(host="0.0.0.0", port=port)
