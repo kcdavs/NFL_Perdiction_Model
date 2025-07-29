@@ -113,6 +113,69 @@ def scrape_and_push_week(year, week):
         tb = traceback.format_exc()
         return Response(f"❌ Error:\n{e}\n\n{tb}", status=500, mimetype="text/plain")
 
+from fetch_capture import fetch_odds_json_urls
+
+@app.route("/fetch/<int:year>/<int:week>")
+def fetch_urls_for_week(year, week):
+    try:
+        # TEMP: Static mapping — replace later with actual lookup
+        seid_map = {
+            2018: 4494,
+            2019: 4520,
+            2020: 4546,
+            2021: 4572,
+            2022: 4598,
+            2023: 4624
+        }
+
+        egid_offset = 9  # First game is egid=10, so week 1 = egid 10
+        seid = seid_map.get(year)
+        egid = 10 + (week - 1)
+
+        if seid is None:
+            return Response(f"No SEID for year {year}", status=400)
+
+        urls = fetch_odds_json_urls(seid, egid)
+        if not urls:
+            return Response("No fetch URLs found.", mimetype="text/plain")
+
+        return Response("\n\n".join(urls), mimetype="text/plain")
+
+    except Exception as e:
+        import traceback
+        return Response(f"❌ Error:\n{e}\n\n{traceback.format_exc()}", status=500, mimetype="text/plain")
+from fetch_capture import fetch_odds_json_urls
+
+@app.route("/fetch/<int:year>/<int:week>")
+def fetch_urls_for_week(year, week):
+    try:
+        # TEMP: Static mapping — replace later with actual lookup
+        seid_map = {
+            2018: 4494,
+            2019: 4520,
+            2020: 4546,
+            2021: 4572,
+            2022: 4598,
+            2023: 4624
+        }
+
+        egid_offset = 9  # First game is egid=10, so week 1 = egid 10
+        seid = seid_map.get(year)
+        egid = 10 + (week - 1)
+
+        if seid is None:
+            return Response(f"No SEID for year {year}", status=400)
+
+        urls = fetch_odds_json_urls(seid, egid)
+        if not urls:
+            return Response("No fetch URLs found.", mimetype="text/plain")
+
+        return Response("\n\n".join(urls), mimetype="text/plain")
+
+    except Exception as e:
+        import traceback
+        return Response(f"❌ Error:\n{e}\n\n{traceback.format_exc()}", status=500, mimetype="text/plain")
+
 
 # ✅ Keep this at the bottom
 if __name__ == "__main__":
