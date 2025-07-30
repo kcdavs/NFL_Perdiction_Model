@@ -142,9 +142,8 @@ def fetch_urls_for_week(year, week):
         return Response(f"❌ Error:\n{e}\n\n{tb}", status=500, mimetype="text/plain")
 
 @app.route("/games/<int:year>/<int:week>")
-def raw_games_html(year, week):
+def show_grid_container(year, week):
     try:
-        # Calculate egid and seid (use your map)
         seid_map = {
             2018: 4494,
             2019: 4520,
@@ -155,20 +154,33 @@ def raw_games_html(year, week):
         }
         seid = seid_map.get(year)
         if seid is None:
-            return Response("❌ Unknown season ID (seid) for that year", status=400)
+            return Response("❌ Unknown SEID for that year", status=400)
 
         egid = 10 + (week - 1)
         url = f"https://odds.bookmakersreview.com/nfl/?egid={egid}&seid={seid}"
 
-        headers = {"User-Agent": "Mozilla/5.0"}  # mimic browser
+        headers = {"User-Agent": "Mozilla/5.0"}
         res = requests.get(url, headers=headers, timeout=10)
         res.raise_for_status()
 
-        # Return raw HTML as-is
-        return Response(res.text, mimetype="text/html")
+        soup = BeautifulSoup(res.text, "html.parser")
+
+        # Find only the container you care about
+        grid = soup.find("div", class_="gridContainer-O4ezT")
+        if not grid:
+            return Response("❌ gridContainer-O4ezT not found", status=404)
+
+        # Remove scripts/styles from just this part
+        for tag in grid(["script", "style", "noscript"]):
+            tag.decompose()
+
+        cleaned = str(grid)
+
+        return Response(f"<html><body>{cleaned}</body></html>", mimetype="text/html")
 
     except Exception as e:
         return Response(f"❌ Error: {str(e)}", status=500, mimetype="text/plain")
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 3000))
     app.run(host="0.0.0.0", port=port)
