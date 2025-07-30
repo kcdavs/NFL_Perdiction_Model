@@ -11,6 +11,38 @@ import re
 
 app = Flask(__name__)
 
+def push_csv_to_github(csv_content, year, week, repo="kcdavs/NFL-Gambling-Addiction-ml", branch="main"):
+    token = os.getenv("GITHUB_TOKEN")
+    if not token:
+        raise Exception("Missing GITHUB_TOKEN environment variable")
+
+    filename = f"odds/{year}/week{str(week).zfill(2)}.csv"
+    api_url = f"https://api.github.com/repos/{repo}/contents/{filename}"
+
+    response = requests.get(api_url, headers={"Authorization": f"token {token}"})
+    sha = response.json().get("sha") if response.status_code == 200 else None
+
+    message = f"Add odds for {year} week {week}"
+    encoded_content = base64.b64encode(csv_content.encode("utf-8")).decode("utf-8")
+
+    payload = {
+        "message": message,
+        "content": encoded_content,
+        "branch": branch
+    }
+    if sha:
+        payload["sha"] = sha
+
+    headers = {
+        "Authorization": f"token {token}",
+        "Accept": "application/vnd.github+json"
+    }
+
+    res = requests.put(api_url, json=payload, headers=headers)
+    if res.status_code not in [200, 201]:
+        raise Exception(f"GitHub upload failed: {res.status_code} – {res.text}")
+    return res.json()
+
 # Utility to extract metadata from HTML
 def extract_metadata(year, week):
     seid_map = {
@@ -157,7 +189,9 @@ def combined_view(year, week):
         json_df["eid"] = json_df["eid"].astype(str)
 
         merged = pd.merge(meta_df, json_df, on=["eid", "team"], how="left")
-        return Response(merged.to_csv(index=False), mimetype="text/csv")
+        csv = merged.to_csv(index=False)
+        push_csv_to_github(csv, year, week)
+        return Response(csv, mimetype="text/csv")
 
     except Exception as e:
         return Response(f"❌ Error: {e}", status=500, mimetype="text/plain")
