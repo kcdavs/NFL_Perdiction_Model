@@ -47,6 +47,42 @@ def fetch_and_tabulate(year, week):
             eid = int(eid)
             eid_order.append(eid)
 
+            rows = a.find_all("tr", class_="participantRow--z17q")
+            if len(rows) != 2:
+                continue
+
+            # Extract date/time from first row
+            date = time = outcome = None
+            time_td = rows[0].find("td", class_="timeContainer-3yNjf")
+            if time_td:
+                status = time_td.find("span", class_="eventStatusBox-19ZbY")
+                when = time_td.find("div", class_="time-3gPvd")
+                if status: outcome = status.get_text(strip=True)
+                if when:
+                    ds = when.find("span")
+                    tp = when.find("p")
+                    if ds: date = ds.get_text(strip=True)
+                    if tp: time = tp.get_text(strip=True)
+
+            for r in rows:
+                tds = r.find_all("td")
+                if len(tds) < 3:
+                    continue
+                meta = {
+                    "eid": eid,
+                    "season": year,
+                    "week": week,
+                    "date": date,
+                    "time": time,
+                    "outcome": outcome,
+                    "team": tds[1].get_text(strip=True),
+                    "score": tds[2].get_text(strip=True),
+                }
+                metadata_rows.append(meta)
+
+        meta_df = pd.DataFrame(metadata_rows)
+        meta_df["meta_idx"] = meta_df.groupby("eid").cumcount()
+
         eid_list = ",".join(map(str, eid_order))
         paid_list = ",".join(map(str, [8, 9, 10, 123, 44, 29, 16, 130, 54, 82, 36, 20, 127, 28, 84]))
         query = (
@@ -71,22 +107,18 @@ def fetch_and_tabulate(year, week):
         df["mapped_team"] = df["partid"].map(TEAM_MAP)
         df["season"] = year
         df["week"] = week
+        df["meta_idx"] = df.groupby("eid").cumcount()
 
-        if "eid" not in df.columns or df["eid"].isnull().all():
-            return Response("❌ Error: No valid EIDs in JSON data", status=500, mimetype="text/plain")
+        merged = meta_df.merge(df, on=["eid", "season", "week", "meta_idx"], how="left")
+        merged.drop(columns=["meta_idx", "mapped_team"], inplace=True)
 
-        # Reorder rows to match HTML order
-        df["eid_order"] = df["eid"].apply(lambda x: eid_order.index(x) if x in eid_order else -1)
-        df.sort_values(by=["eid_order", "partid"], inplace=True)
-        df.drop(columns=["eid_order"], inplace=True)
-
-        meta_cols = ["season", "week"]
-        betting_cols = [c for c in df.columns if c.startswith("adj_") or c.startswith("ap_") or c in ["perc", "opening_adj", "opening_ap"]]
+        meta_cols = ["season", "week", "date", "time", "team", "score", "outcome"]
+        betting_cols = [c for c in merged.columns if c.startswith("adj_") or c.startswith("ap_") or c in ["perc", "opening_adj", "opening_ap"]]
         id_cols = ["eid", "partid"]
         final_cols = meta_cols + betting_cols + id_cols
-        df = df[final_cols]
+        merged = merged[final_cols]
 
-        csv_data = df.to_csv(index=False)
+        csv_data = merged.to_csv(index=False)
         return Response(csv_data, mimetype="text/csv")
 
     except Exception as e:
