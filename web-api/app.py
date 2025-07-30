@@ -194,26 +194,31 @@ def metadata_test(year, week):
         soup = BeautifulSoup(res.text, "html.parser")
 
         rows = []
+
         for game in soup.find_all("a", class_="wrapper-2OSHA", href=True):
             row = {}
-            # Extract EID
+
+            # Extract EID from URL
             parsed = urlparse(game["href"])
             query = parse_qs(parsed.query)
-            eid = query.get("eid", [None])[0]
-            row["eid"] = eid
+            row["eid"] = query.get("eid", [None])[0]
 
-            # Game time (day/time)
+            # Game time
             time_tag = game.find("div", class_="dateBox-3kF8a")
             row["time"] = time_tag.text.strip() if time_tag else None
 
-            # Team names and scores
+            # Status (e.g., Final, Live, etc.)
+            status_tag = game.find("div", class_="statusIndicatorBox-3Rn8z")
+            row["status"] = status_tag.text.strip() if status_tag else None
+
+            # Teams (away first, then home)
             teams = game.find_all("div", class_="teamWrapper-11a8T")
             if len(teams) == 2:
                 for i, t in enumerate(["away", "home"]):
-                    name_tag = teams[i].find("span", class_="teamName-1xh5H")
-                    score_tag = teams[i].find("span", class_="scoreWrapper-2r60i")
-                    row[f"{t}_team"] = name_tag.text.strip() if name_tag else None
-                    row[f"{t}_score"] = score_tag.text.strip() if score_tag else None
+                    team_name = teams[i].find("span", class_="teamName-1xh5H")
+                    score = teams[i].find("span", class_="scoreWrapper-2r60i")
+                    row[f"{t}_team"] = team_name.text.strip() if team_name else None
+                    row[f"{t}_score"] = score.text.strip() if score else None
 
             rows.append(row)
 
@@ -223,6 +228,7 @@ def metadata_test(year, week):
     except Exception as e:
         tb = traceback.format_exc()
         return Response(f"❌ Error:\n{e}\n\n{tb}", status=500, mimetype="text/plain")
+
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 3000))
