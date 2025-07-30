@@ -80,10 +80,6 @@ def fetch_and_tabulate(year, week):
                 metadata_rows.append(meta)
 
         meta_df = pd.DataFrame(metadata_rows)
-        if "eid" not in meta_df.columns:
-            return Response("❌ Error: 'eid' column missing in metadata", status=500, mimetype="text/plain")
-        meta_df["eid"] = meta_df["eid"].astype(int)
-        meta_df["meta_idx"] = meta_df.groupby("eid").cumcount()
 
         eid_list = ",".join(map(str, eid_order))
         paid_list = ",".join(map(str, [8, 9, 10, 123, 44, 29, 16, 130, 54, 82, 36, 20, 127, 28, 84]))
@@ -106,22 +102,20 @@ def fetch_and_tabulate(year, week):
             tmp_path = tmp.name
 
         df = load_and_pivot_acl(tmp_path, f"{year}_week{week}")
-        df["mapped_team"] = df["partid"].map(TEAM_MAP)
         df["season"] = year
         df["week"] = week
-        df["meta_idx"] = df.groupby("eid").cumcount()
 
-        merged = meta_df.merge(df, on=["eid", "season", "week", "meta_idx"], how="left")
-        merged.drop(columns=["meta_idx", "mapped_team"], inplace=True)
+        meta_csv = meta_df.to_csv(index=False)
+        json_csv = df.to_csv(index=False)
 
-        meta_cols = ["season", "week", "date", "time", "team", "score", "outcome"]
-        betting_cols = [c for c in merged.columns if c.startswith("adj_") or c.startswith("ap_") or c in ["perc", "opening_adj", "opening_ap"]]
-        id_cols = ["eid", "partid"]
-        final_cols = meta_cols + betting_cols + id_cols
-        merged = merged[final_cols]
+        combined = (
+            f"### METADATA ({year} week {week})\n\n"
+            f"{meta_csv}\n"
+            f"### JSON ({year} week {week})\n\n"
+            f"{json_csv}"
+        )
 
-        csv_data = merged.to_csv(index=False)
-        return Response(csv_data, mimetype="text/csv")
+        return Response(combined, mimetype="text/plain")
 
     except Exception as e:
         tb = traceback.format_exc()
