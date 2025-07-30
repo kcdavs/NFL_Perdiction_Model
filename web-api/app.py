@@ -11,41 +11,66 @@ from github_writer import push_csv_to_github
 
 app = Flask(__name__)
 
-def get_eids(year, week):
-    seid_map = {
-        2018: 4494, 2019: 4520, 2020: 4546,
-        2021: 4572, 2022: 4598, 2023: 4624
-    }
-    seid = seid_map.get(year)
-    if seid is None:
-        raise ValueError(f"Unknown SEID for year {year}")
-
-    egid = 10 + (week - 1)
-    url = f"https://odds.bookmakersreview.com/nfl/?egid={egid}&seid={seid}"
-    resp = requests.get(url)
-    resp.raise_for_status()
-
-    soup = BeautifulSoup(resp.text, "html.parser")
-    a_tags = soup.find_all("a", class_="wrapper-2OSHA")
-    eids = []
-    for a in a_tags:
-        href = a.get("href", "")
-        parsed = urlparse(href)
-        params = parse_qs(parsed.query)
-        eid = params.get("eid")
-        if eid:
-            eids.append(eid[0])
-    if not eids:
-        raise ValueError("No EIDs found for this year/week")
-    return eids
+# Static partid-to-team mapping used for verification
+TEAM_MAP = {
+    1536: "Philadelphia", 1546: "Atlanta", 1541: "Minnesota", 1547: "San Francisco",
+    1525: "New England", 1530: "Houston", 1521: "Baltimore", 1526: "Buffalo",
+    1529: "Jacksonville", 1535: "N.Y. Giants", 1527: "Indianapolis", 1522: "Cincinnati",
+    1531: "Kansas City", 75380: "L.A. Chargers", 1543: "New Orleans", 1544: "Tampa Bay",
+    1523: "N.Y. Jets", 1539: "Detroit", 1540: "Chicago", 1542: "Green Bay",
+    1533: "Oakland", 1550: "L.A. Rams", 1538: "Dallas", 1545: "Carolina",
+    1534: "Denver", 1548: "Seattle", 1537: "Washington", 1549: "Arizona",
+    1524: "Miami", 1528: "Tennessee", 1519: "Pittsburgh", 1520: "Cleveland"
+}
 
 @app.route("/fetch-and-tabulate/<int:year>/<int:week>")
 def fetch_and_tabulate(year, week):
     try:
-        eids = get_eids(year, week)
-        eid_list = ",".join(eids)
-        paid_list = ",".join(map(str, [8, 9, 10, 123, 44, 29, 16, 130, 54, 82, 36, 20, 127, 28, 84]))
+        # Step 1: Get EIDs
+        seid_lookup = {2018: 4494, 2019: 4520, 2020: 4546, 2021: 4572, 2022: 4598, 2023: 4624, 2024: 42499, 2025: 59654}
+        seid = seid_lookup.get(year)
+        egid = 10 + (week - 1)
+        url_html = f"https://odds.bookmakersreview.com/nfl/?egid={egid}&seid={seid}"
+        html_resp = requests.get(url_html)
+        html_resp.raise_for_status()
 
+        soup = BeautifulSoup(html_resp.text, "html.parser")
+        a_tags = soup.find_all("a", class_="wrapper-2OSHA", href=True)
+
+        metadata_rows = []
+        eid_order = []
+        for a in a_tags:
+            href = a["href"]
+            parsed = urlparse(href)
+            eid = parse_qs(parsed.query).get("eid", [None])[0]
+            if not eid or not eid.isdigit():
+                continue
+            eid = int(eid)
+            eid_order.append(eid)
+
+            game_rows = a.find_all("tr", class_="participantRow--z17q")
+            for r in game_rows:
+                tds = r.find_all("td")
+                meta = {"eid": eid, "season": year, "week": week}
+                time_td = r.find("td", class_="timeContainer-3yNjf")
+                if time_td:
+                    status = time_td.find("span", class_="eventStatusBox-19ZbY")
+                    when = time_td.find("div", class_="time-3gPvd")
+                    if status: meta["outcome"] = status.get_text(strip=True)
+                    if when:
+                        ds = when.find("span")
+                        tp = when.find("p")
+                        if ds: meta["date"] = ds.get_text(strip=True)
+                        if tp: meta["time"] = tp.get_text(strip=True)
+                meta["team"] = tds[1].get_text(strip=True) if len(tds) > 1 else None
+                meta["score"] = tds[2].get_text(strip=True) if len(tds) > 2 else None
+                metadata_rows.append(meta)
+
+        meta_df = pd.DataFrame(metadata_rows).dropna(subset=["team"])
+
+        # Step 2: Fetch JSON odds
+        eid_list = ",".join(map(str, eid_order))
+        paid_list = ",".join(map(str, [8, 9, 10, 123, 44, 29, 16, 130, 54, 82, 36, 20, 127, 28, 84]))
         query = (
             f"{{"
             f"A_BL: bestLines(catid: 338 eid: [{eid_list}] mtid: 401) "
@@ -56,14 +81,8 @@ def fetch_and_tabulate(year, week):
             f"maxSequences {{ linesMaxSequence }} "
             f"}}"
         )
-        url = "https://ms.production-us-east-1.bookmakersreview.com/ms-odds-v2/odds-v2-service?query=" + query
-        headers = {
-            "User-Agent": "Mozilla/5.0",
-            "Accept": "application/json",
-            "Referer": "https://odds.bookmakersreview.com/nfl/",
-            "X-Requested-With": "XMLHttpRequest",
-        }
-        resp = requests.get(url, headers=headers, timeout=10)
+        gql_url = "https://ms.production-us-east-1.bookmakersreview.com/ms-odds-v2/odds-v2-service?query=" + query
+        resp = requests.get(gql_url)
         resp.raise_for_status()
 
         with tempfile.NamedTemporaryFile(mode="w+", suffix=".json", delete=False) as tmp:
@@ -71,67 +90,37 @@ def fetch_and_tabulate(year, week):
             tmp_path = tmp.name
 
         df = load_and_pivot_acl(tmp_path, f"{year}_week{week}")
+
+        # Add team name from mapping just for verification
+        df["mapped_team"] = df["partid"].map(TEAM_MAP)
         df["season"] = year
         df["week"] = week
 
-        # Step 4: Scrape HTML metadata
-        seid_map = {
-            2018: 4494, 2019: 5703, 2020: 8582,
-            2021: 29178, 2022: 38109, 2023: 38292,
-            2024: 42499, 2025: 59654
-        }
-        seid = seid_map.get(year)
-        egid = 10 + (week - 1)
-        url_html = f"https://odds.bookmakersreview.com/nfl/?egid={egid}&seid={seid}"
-        html_resp = requests.get(url_html, headers=headers)
-        html_resp.raise_for_status()
+        # Check team consistency for each eid
+        inconsistencies = []
+        for eid in df["eid"].unique():
+            odds_teams = df[df["eid"] == eid]["mapped_team"].dropna().tolist()
+            meta_teams = meta_df[meta_df["eid"] == eid]["team"].dropna().tolist()
+            if sorted(odds_teams) != sorted(meta_teams):
+                inconsistencies.append((eid, odds_teams, meta_teams))
 
-        soup = BeautifulSoup(html_resp.text, "html.parser")
-        all_data = []
+        if inconsistencies:
+            error_msg = "Team mismatch for EIDs:\n"
+            for eid, json_teams, html_teams in inconsistencies:
+                error_msg += f"EID {eid}: JSON={json_teams}, HTML={html_teams}\n"
+            return Response(error_msg, status=500, mimetype="text/plain")
 
-        grid_containers = soup.find_all("div", class_="gridContainer-O4ezT")
-        for grid in grid_containers:
-            tables = grid.find_all("table", class_="tableGrid-2PF6A")
-            for table in tables:
-                rows = table.find_all("tr", class_="participantRow--z17q")
-                for i in range(0, len(rows), 2):
-                    row1, row2 = rows[i], rows[i + 1]
+        # Create row index to preserve metadata order
+        meta_df["meta_idx"] = meta_df.groupby("eid").cumcount()
+        df["meta_idx"] = df.groupby("eid").cumcount()
 
-                    def extract_info(r, skip_time=False):
-                        tds = r.find_all("td")
-                        if skip_time:
-                            tds = tds[1:]
-                        row = {"season": year, "week": week}
-                        time_td = r.find("td", class_="timeContainer-3yNjf")
-                        if time_td:
-                            outcome = time_td.find("span", class_="eventStatusBox-19ZbY")
-                            date = time_td.find("div", class_="time-3gPvd")
-                            row["outcome"] = outcome.get_text(strip=True) if outcome else None
-                            if date:
-                                ds = date.find("span")
-                                tp = date.find("p")
-                                row["date"] = ds.get_text(strip=True) if ds else None
-                                row["time"] = tp.get_text(strip=True) if tp else None
-                        team_td = tds[1] if len(tds) > 1 else None
-                        score_td = tds[2] if len(tds) > 2 else None
-                        row["team"] = team_td.get_text(strip=True) if team_td else None
-                        row["score"] = score_td.get_text(strip=True) if score_td else None
-                        return row
+        merged = df.merge(meta_df, on=["eid", "season", "week", "meta_idx"], how="left")
+        merged.drop(columns=["meta_idx", "mapped_team"], inplace=True)
 
-                    all_data.append(extract_info(row1, skip_time=True))
-                    all_data.append(extract_info(row2, skip_time=False))
-
-        html_df = pd.DataFrame(all_data).dropna(subset=["team"])
-
-        # Add row indices to preserve order
-        html_df["row_idx"] = html_df.groupby(["season", "week"]).cumcount()
-        df["row_idx"] = df.groupby(["season", "week", "eid"]).cumcount()
-
-        # Merge and reorder columns
-        merged = df.merge(html_df, on=["season", "week", "row_idx"], how="left").drop(columns=["row_idx"])
-        metadata_cols = ["season", "week", "date", "time", "outcome", "team", "score"]
-        betting_cols = [col for col in merged.columns if col.startswith("adj_") or col.startswith("ap_") or col in ["opening_adj", "opening_ap", "perc"]]
-        final_cols = metadata_cols + betting_cols + ["eid", "partid"]
+        # Final column order: metadata → JSON betting data → IDs
+        meta_cols = ["season", "week", "date", "time", "team", "score", "outcome"]
+        betting_cols = [c for c in merged.columns if c.startswith("adj_") or c.startswith("ap_") or c in ["perc", "opening_adj", "opening_ap"]]
+        final_cols = meta_cols + betting_cols + ["eid", "partid"]
         merged = merged[final_cols]
 
         csv_data = merged.to_csv(index=False)
