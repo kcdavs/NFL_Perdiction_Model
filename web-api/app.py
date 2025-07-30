@@ -23,44 +23,6 @@ TEAM_MAP = {
     1524: "Miami", 1528: "Tennessee", 1519: "Pittsburgh", 1520: "Cleveland"
 }
 
-
-@app.route("/eids/<int:year>/<int:week>")
-def eids_route(year, week):
-    try:
-        eids = get_eids(year, week)
-        return Response(",".join(eids), mimetype="text/plain")
-    except Exception as e:
-        tb = traceback.format_exc()
-        return Response(f"❌ Error:\n{e}\n\n{tb}", status=500, mimetype="text/plain")
-
-def get_eids(year, week):
-    seid_map = {
-        2018: 4494, 2019: 4520, 2020: 4546,
-        2021: 4572, 2022: 4598, 2023: 4624
-    }
-    seid = seid_map.get(year)
-    if seid is None:
-        raise ValueError(f"Unknown SEID for year {year}")
-
-    egid = 10 + (week - 1)
-    url = f"https://odds.bookmakersreview.com/nfl/?egid={egid}&seid={seid}"
-    resp = requests.get(url)
-    resp.raise_for_status()
-
-    soup = BeautifulSoup(resp.text, "html.parser")
-    a_tags = soup.find_all("a", class_="wrapper-2OSHA")
-    eids = []
-    for a in a_tags:
-        href = a.get("href", "")
-        parsed = urlparse(href)
-        params = parse_qs(parsed.query)
-        eid = params.get("eid")
-        if eid:
-            eids.append(eid[0])
-    if not eids:
-        raise ValueError("No EIDs found for this year/week")
-    return eids
-
 @app.route("/fetch-and-tabulate/<int:year>/<int:week>")
 def fetch_and_tabulate(year, week):
     try:
@@ -84,46 +46,6 @@ def fetch_and_tabulate(year, week):
                 continue
             eid = int(eid)
             eid_order.append(eid)
-
-            rows = a.find_all("tr", class_="participantRow--z17q")
-            if len(rows) != 2:
-                continue
-
-            # Extract date/time from first row
-            date = time = outcome = None
-            time_td = rows[0].find("td", class_="timeContainer-3yNjf")
-            if time_td:
-                status = time_td.find("span", class_="eventStatusBox-19ZbY")
-                when = time_td.find("div", class_="time-3gPvd")
-                if status: outcome = status.get_text(strip=True)
-                if when:
-                    ds = when.find("span")
-                    tp = when.find("p")
-                    if ds: date = ds.get_text(strip=True)
-                    if tp: time = tp.get_text(strip=True)
-
-            for r in rows:
-                tds = r.find_all("td")
-                if len(tds) < 3:
-                    continue
-                meta = {
-                    "eid": eid,
-                    "season": year,
-                    "week": week,
-                    "date": date,
-                    "time": time,
-                    "outcome": outcome,
-                    "team": tds[1].get_text(strip=True),
-                    "score": tds[2].get_text(strip=True),
-                }
-                metadata_rows.append(meta)
-
-        meta_df = pd.DataFrame(metadata_rows)
-        if meta_df.empty or "team" not in meta_df.columns or "eid" not in meta_df.columns:
-            return Response("❌ Error: Failed to extract metadata (team or eid missing)", status=500, mimetype="text/plain")
-
-        meta_df = meta_df.dropna(subset=["team", "eid"])
-        meta_df["eid"] = meta_df["eid"].astype(int)
 
         eid_list = ",".join(map(str, eid_order))
         paid_list = ",".join(map(str, [8, 9, 10, 123, 44, 29, 16, 130, 54, 82, 36, 20, 127, 28, 84]))
@@ -153,32 +75,18 @@ def fetch_and_tabulate(year, week):
         if "eid" not in df.columns or df["eid"].isnull().all():
             return Response("❌ Error: No valid EIDs in JSON data", status=500, mimetype="text/plain")
 
-        inconsistencies = []
-        for eid in df["eid"].unique():
-            odds_teams = df[df["eid"] == eid]["mapped_team"].dropna().tolist()
-            meta_teams = meta_df[meta_df["eid"] == eid]["team"].dropna().tolist()
-            if sorted(odds_teams) != sorted(meta_teams):
-                inconsistencies.append((eid, odds_teams, meta_teams))
+        # Reorder rows to match HTML order
+        df["eid_order"] = df["eid"].apply(lambda x: eid_order.index(x) if x in eid_order else -1)
+        df.sort_values(by=["eid_order", "partid"], inplace=True)
+        df.drop(columns=["eid_order"], inplace=True)
 
-        if inconsistencies:
-            error_msg = "Team mismatch for EIDs:\n"
-            for eid, json_teams, html_teams in inconsistencies:
-                error_msg += f"EID {eid}:\n  JSON: {json_teams}\n  HTML: {html_teams}\n\n"
-            return Response(error_msg, status=400, mimetype="text/plain")
-
-        meta_df["meta_idx"] = meta_df.groupby("eid").cumcount()
-        df["meta_idx"] = df.groupby("eid").cumcount()
-
-        merged = df.merge(meta_df, on=["eid", "season", "week", "meta_idx"], how="left")
-        merged.drop(columns=["meta_idx", "mapped_team"], inplace=True)
-
-        meta_cols = ["season", "week", "date", "time", "team", "score", "outcome"]
-        betting_cols = [c for c in merged.columns if c.startswith("adj_") or c.startswith("ap_") or c in ["perc", "opening_adj", "opening_ap"]]
+        meta_cols = ["season", "week"]
+        betting_cols = [c for c in df.columns if c.startswith("adj_") or c.startswith("ap_") or c in ["perc", "opening_adj", "opening_ap"]]
         id_cols = ["eid", "partid"]
         final_cols = meta_cols + betting_cols + id_cols
-        merged = merged[final_cols]
+        df = df[final_cols]
 
-        csv_data = merged.to_csv(index=False)
+        csv_data = df.to_csv(index=False)
         return Response(csv_data, mimetype="text/csv")
 
     except Exception as e:
