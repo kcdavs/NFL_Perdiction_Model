@@ -175,6 +175,9 @@ def fetch_and_save_to_github(year, week):
         tb = traceback.format_exc()
         return Response(f"❌ Error:\n{e}\n\n{tb}", status=500, mimetype="text/plain")
 
+import re
+from flask import render_template_string
+
 @app.route("/metadata/<int:year>/<int:week>")
 def metadata_test(year, week):
     try:
@@ -183,51 +186,93 @@ def metadata_test(year, week):
             2021: 29178, 2022: 38109, 2023: 38292,
             2024: 42499, 2025: 59654
         }
-
         seid = SEID_MAP.get(year)
         if not seid:
-            return Response(f"No SEID found for year {year}", status=400)
+            return f"No SEID for year {year}", 400
 
         egid = 10 + (week - 1)
         url = f"https://odds.bookmakersreview.com/nfl/?egid={egid}&seid={seid}"
-        res = requests.get(url)
-        soup = BeautifulSoup(res.text, "html.parser")
+        resp = requests.get(url)
+        resp.raise_for_status()
+        soup = BeautifulSoup(resp.text, "html.parser")
 
         rows = []
+        # your old outer loops
+        for grid in soup.find_all("div", class_="gridContainer-O4ezT"):
+            for table in grid.find_all("table", class_="tableGrid-2PF6A"):
+                parts = table.find_all("tr", class_="participantRow--z17q")
+                # each game is two rows: time/status then teams
+                for i in range(0, len(parts), 2):
+                    row_time, row_team = parts[i], parts[i+1]
+                    data = {}
 
-        for game in soup.find_all("a", class_="wrapper-2OSHA", href=True):
-            row = {}
+                    # 1) EID from the wrapper <a>
+                    wrapper = row_time.find_parent("a", href=True)
+                    qs = parse_qs(urlparse(wrapper["href"]).query)
+                    data["eid"] = qs.get("eid", [""])[0]
 
-            # Extract EID from URL
-            parsed = urlparse(game["href"])
-            query = parse_qs(parsed.query)
-            row["eid"] = query.get("eid", [None])[0]
+                    # 2) time / date / status
+                    tc = row_time.find("td", class_="timeContainer-3yNjf")
+                    if tc:
+                        ev = tc.find("span", class_="eventStatusBox-19ZbY")
+                        tm = tc.find("div",  class_="time-3gPvd")
+                        data["status"] = ev.get_text(strip=True) if ev else ""
+                        data["date"]   = tm.get_text(strip=True) if tm else ""
+                    else:
+                        data["status"] = data["date"] = ""
 
-            # Game time
-            time_tag = game.find("div", class_="dateBox-3kF8a")
-            row["time"] = time_tag.text.strip() if time_tag else None
+                    # 3) teams & scores
+                    # row_team has two <td class="participantCell-…"> cells, one away, one home
+                    cells = row_team.find_all("td", class_=re.compile(r".*participantCell.*"))
+                    if len(cells) >= 2:
+                        for side, cell in zip(("away", "home"), cells[:2]):
+                            nm = cell.find("span", class_=re.compile(r".*participantName.*"))
+                            sc = cell.find("span", class_=re.compile(r".*totalScore.*"))
+                            data[f"{side}_team"]  = nm.get_text(strip=True) if nm else ""
+                            data[f"{side}_score"] = sc.get_text(strip=True) if sc else ""
+                    else:
+                        data.update({
+                            "away_team": "", "away_score": "",
+                            "home_team": "", "home_score": ""
+                        })
 
-            # Status (e.g., Final, Live, etc.)
-            status_tag = game.find("div", class_="statusIndicatorBox-3Rn8z")
-            row["status"] = status_tag.text.strip() if status_tag else None
+                    rows.append(data)
 
-            # Teams (away first, then home)
-            teams = game.find_all("div", class_="teamWrapper-11a8T")
-            if len(teams) == 2:
-                for i, t in enumerate(["away", "home"]):
-                    team_name = teams[i].find("span", class_="teamName-1xh5H")
-                    score = teams[i].find("span", class_="scoreWrapper-2r60i")
-                    row[f"{t}_team"] = team_name.text.strip() if team_name else None
-                    row[f"{t}_score"] = score.text.strip() if score else None
-
-            rows.append(row)
-
-        df = pd.DataFrame(rows)
-        return Response(df.to_csv(index=False), mimetype="text/csv")
+        # render as HTML table
+        return render_template_string("""
+        <html><head>
+          <style>
+            body { font-family: sans-serif; }
+            table { border-collapse: collapse; width: 100%; margin-top: 1em; }
+            th, td { border: 1px solid #ccc; padding: 6px; text-align: center; }
+            th { background: #eee; }
+          </style>
+        </head><body>
+          <h2>Metadata for NFL {{year}} Week {{week}}</h2>
+          <table>
+            <tr>
+              <th>eid</th><th>date</th><th>status</th>
+              <th>away_team</th><th>away_score</th>
+              <th>home_team</th><th>home_score</th>
+            </tr>
+            {% for r in rows %}
+            <tr>
+              <td>{{r.eid}}</td>
+              <td>{{r.date}}</td>
+              <td>{{r.status}}</td>
+              <td>{{r.away_team}}</td>
+              <td>{{r.away_score}}</td>
+              <td>{{r.home_team}}</td>
+              <td>{{r.home_score}}</td>
+            </tr>
+            {% endfor %}
+          </table>
+        </body></html>
+        """, year=year, week=week, rows=rows)
 
     except Exception as e:
         tb = traceback.format_exc()
-        return Response(f"❌ Error:\n{e}\n\n{tb}", status=500, mimetype="text/plain")
+        return f"❌ Error:\n{e}\n\n{tb}", 500
 
 
 if __name__ == "__main__":
