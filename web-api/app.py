@@ -26,7 +26,6 @@ TEAM_MAP = {
 @app.route("/fetch-and-tabulate/<int:year>/<int:week>")
 def fetch_and_tabulate(year, week):
     try:
-        # Step 1: Get EIDs and metadata from HTML
         seid_lookup = {2018: 4494, 2019: 4520, 2020: 4546, 2021: 4572, 2022: 4598, 2023: 4624, 2024: 42499, 2025: 59654}
         seid = seid_lookup.get(year)
         egid = 10 + (week - 1)
@@ -40,7 +39,7 @@ def fetch_and_tabulate(year, week):
         metadata_rows = []
         eid_order = []
         for a in a_tags:
-            href = a["href"]
+            href = a.get("href")
             parsed = urlparse(href)
             eid = parse_qs(parsed.query).get("eid", [None])[0]
             if not eid or not eid.isdigit():
@@ -71,12 +70,12 @@ def fetch_and_tabulate(year, week):
                 metadata_rows.append(meta)
 
         meta_df = pd.DataFrame(metadata_rows)
-        if "team" in meta_df.columns:
-            meta_df = meta_df.dropna(subset=["team"])
-        else:
-            meta_df["team"] = None
+        if "team" not in meta_df.columns or "eid" not in meta_df.columns:
+            return Response("❌ Error: Missing required 'team' or 'eid' in metadata", status=500, mimetype="text/plain")
 
-        # Step 2: Fetch JSON odds
+        meta_df = meta_df.dropna(subset=["team", "eid"])
+        meta_df["eid"] = meta_df["eid"].astype(int)
+
         eid_list = ",".join(map(str, eid_order))
         paid_list = ",".join(map(str, [8, 9, 10, 123, 44, 29, 16, 130, 54, 82, 36, 20, 127, 28, 84]))
         query = (
@@ -98,18 +97,19 @@ def fetch_and_tabulate(year, week):
             tmp_path = tmp.name
 
         df = load_and_pivot_acl(tmp_path, f"{year}_week{week}")
-
         df["mapped_team"] = df["partid"].map(TEAM_MAP)
         df["season"] = year
         df["week"] = week
 
+        if "eid" not in df.columns or df["eid"].isnull().all():
+            return Response("❌ Error: No valid EIDs in JSON data", status=500, mimetype="text/plain")
+
         inconsistencies = []
-        if "eid" in meta_df.columns:
-            for eid in df["eid"].unique():
-                odds_teams = df[df["eid"] == eid]["mapped_team"].dropna().tolist()
-                meta_teams = meta_df[meta_df["eid"] == eid]["team"].dropna().tolist()
-                if sorted(odds_teams) != sorted(meta_teams):
-                    inconsistencies.append((eid, odds_teams, meta_teams))
+        for eid in df["eid"].unique():
+            odds_teams = df[df["eid"] == eid]["mapped_team"].dropna().tolist()
+            meta_teams = meta_df[meta_df["eid"] == eid]["team"].dropna().tolist()
+            if sorted(odds_teams) != sorted(meta_teams):
+                inconsistencies.append((eid, odds_teams, meta_teams))
 
         if inconsistencies:
             error_msg = "Team mismatch for EIDs:\n"
