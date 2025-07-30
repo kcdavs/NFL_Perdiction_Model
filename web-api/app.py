@@ -11,8 +11,6 @@ from github_writer import push_csv_to_github
 
 app = Flask(__name__)
 
-# Your existing /eids/<year>/<week> route here (or just copy scrape logic into this helper):
-
 def get_eids(year, week):
     seid_map = {
         2018: 4494, 2019: 4520, 2020: 4546,
@@ -44,12 +42,10 @@ def get_eids(year, week):
 @app.route("/fetch-and-tabulate/<int:year>/<int:week>")
 def fetch_and_tabulate(year, week):
     try:
-        # Step 1: Get EIDs
         eids = get_eids(year, week)
         eid_list = ",".join(eids)
         paid_list = ",".join(map(str, [8, 9, 10, 123, 44, 29, 16, 130, 54, 82, 36, 20, 127, 28, 84]))
 
-        # Step 2: Build GraphQL query
         query = (
             f"{{"
             f"A_BL: bestLines(catid: 338 eid: [{eid_list}] mtid: 401) "
@@ -74,11 +70,9 @@ def fetch_and_tabulate(year, week):
             tmp.write(resp.text)
             tmp_path = tmp.name
 
-        # Step 3: Parse odds data
         df = load_and_pivot_acl(tmp_path, f"{year}_week{week}")
         df["season"] = year
         df["week"] = week
-
 
         # Step 4: Scrape HTML metadata
         seid_map = {
@@ -127,96 +121,21 @@ def fetch_and_tabulate(year, week):
                     all_data.append(extract_info(row1, skip_time=True))
                     all_data.append(extract_info(row2, skip_time=False))
 
-        html_df = pd.DataFrame(all_data)
-        html_df = html_df.dropna(subset=["team"])
+        html_df = pd.DataFrame(all_data).dropna(subset=["team"])
 
-        # Step 5: Merge odds data with HTML metadata
-        merged = df.merge(html_df, on=["season", "week", "team"], how="left")
+        # Add row indices to preserve order
+        html_df["row_idx"] = html_df.groupby(["season", "week"]).cumcount()
+        df["row_idx"] = df.groupby(["season", "week", "eid"]).cumcount()
+
+        # Merge and reorder columns
+        merged = df.merge(html_df, on=["season", "week", "row_idx"], how="left").drop(columns=["row_idx"])
+        metadata_cols = ["season", "week", "date", "time", "outcome", "team", "score"]
+        betting_cols = [col for col in merged.columns if col.startswith("adj_") or col.startswith("ap_") or col in ["opening_adj", "opening_ap", "perc"]]
+        final_cols = metadata_cols + betting_cols + ["eid", "partid"]
+        merged = merged[final_cols]
 
         csv_data = merged.to_csv(index=False)
         return Response(csv_data, mimetype="text/csv")
-
-    except Exception as e:
-        tb = traceback.format_exc()
-        return Response(f"❌ Error:\n{e}\n\n{tb}", status=500, mimetype="text/plain")
-
-@app.route("/fetch_and_save/<int:year>/<int:week>")
-def fetch_and_save_to_github(year, week):
-    try:
-        seid_map = {
-            2018: 4494,
-            2019: 5703,
-            2020: 8582,
-            2021: 29178,
-            2022: 38109,
-            2023: 38292,
-            2024: 42499,
-            2025: 59654
-        }
-        seid = seid_map.get(year)
-        egid = 10 + (week - 1)
-
-        if not seid:
-            return Response(f"No SEID found for year {year}", status=400)
-
-        # Step 1: Get ordered EIDs from the page
-        url = f"https://odds.bookmakersreview.com/nfl/?egid={egid}&seid={seid}"
-        res = requests.get(url)
-        soup = BeautifulSoup(res.text, "html.parser")
-        a_tags = soup.find_all("a", class_="wrapper-2OSHA", href=True)
-
-        eids = []
-        for a in a_tags:
-            href = a["href"]
-            if "eid=" in href:
-                parsed = urlparse(href)
-                query = parse_qs(parsed.query)
-                eid = query.get("eid", [None])[0]
-                if eid and eid.isdigit():
-                    eids.append(int(eid))
-
-        if not eids:
-            return Response("No EIDs found on the page", status=500)
-
-        # Step 2: Construct GraphQL query using ordered EIDs
-        eid_list = ",".join(map(str, eids))
-        paid_list = ",".join(map(str, [8, 9, 10, 123, 44, 29, 16, 130, 54, 82, 36, 20, 127, 28, 84]))
-
-        query = (
-            f"{{"
-            f"A_BL: bestLines(catid: 338 eid: [{eid_list}] mtid: 401) "
-            f"A_CL: currentLines(paid: [{paid_list}], eid: [{eid_list}], mtid: 401) "
-            f"A_OL: openingLines(paid: 8, eid: [{eid_list}], mtid: 401) "
-            f"A_CO: consensus(eid: [{eid_list}], mtid: 401) "
-            f"{{ eid mtid boid partid sbid paid lineid wag perc vol tvol sequence tim }} "
-            f"maxSequences {{ linesMaxSequence }} "
-            f"}}"
-        )
-        graphql_url = "https://ms.production-us-east-1.bookmakersreview.com/ms-odds-v2/odds-v2-service?query=" + query
-        headers = {
-            "User-Agent": "Mozilla/5.0",
-            "Accept": "application/json",
-            "Referer": "https://odds.bookmakersreview.com/nfl/",
-            "X-Requested-With": "XMLHttpRequest",
-        }
-
-        resp = requests.get(graphql_url, headers=headers, timeout=10)
-        resp.raise_for_status()
-
-        with tempfile.NamedTemporaryFile(mode="w+", suffix=".json", delete=False) as tmp:
-            tmp.write(resp.text)
-            tmp_path = tmp.name
-
-        df = load_and_pivot_acl(tmp_path, f"{year}_week{week}")
-
-        # Preserve row order based on original EID order
-        df["eid_order"] = df["eid"].apply(lambda x: eids.index(x) if x in eids else -1)
-        df = df.sort_values(["eid_order", "partid"]).drop(columns="eid_order")
-
-        csv_data = df.to_csv(index=False)
-        push_csv_to_github(csv_data, year, week)
-
-        return Response(f"✅ Data pushed for {year} Week {week}", mimetype="text/plain")
 
     except Exception as e:
         tb = traceback.format_exc()
