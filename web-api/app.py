@@ -51,6 +51,8 @@ def fetch_and_tabulate(year, week):
             date = time = outcome = None
             for r in game_rows:
                 tds = r.find_all("td")
+                if len(tds) < 3:
+                    continue
                 meta = {"eid": eid, "season": year, "week": week}
                 time_td = r.find("td", class_="timeContainer-3yNjf")
                 if time_td:
@@ -65,13 +67,13 @@ def fetch_and_tabulate(year, week):
                 meta["date"] = date
                 meta["time"] = time
                 meta["outcome"] = outcome
-                meta["team"] = tds[1].get_text(strip=True) if len(tds) > 1 else None
-                meta["score"] = tds[2].get_text(strip=True) if len(tds) > 2 else None
+                meta["team"] = tds[1].get_text(strip=True)
+                meta["score"] = tds[2].get_text(strip=True)
                 metadata_rows.append(meta)
 
         meta_df = pd.DataFrame(metadata_rows)
-        if "team" not in meta_df.columns or "eid" not in meta_df.columns:
-            return Response("❌ Error: Missing required 'team' or 'eid' in metadata", status=500, mimetype="text/plain")
+        if meta_df.empty or "team" not in meta_df.columns or "eid" not in meta_df.columns:
+            return Response("❌ Error: Failed to extract metadata (team or eid missing)", status=500, mimetype="text/plain")
 
         meta_df = meta_df.dropna(subset=["team", "eid"])
         meta_df["eid"] = meta_df["eid"].astype(int)
