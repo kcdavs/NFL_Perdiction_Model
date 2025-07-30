@@ -47,28 +47,37 @@ def fetch_and_tabulate(year, week):
             eid = int(eid)
             eid_order.append(eid)
 
-            game_rows = a.find_all("tr", class_="participantRow--z17q")
+            rows = a.find_all("tr", class_="participantRow--z17q")
+            if len(rows) != 2:
+                continue
+
+            # Extract date/time from first row
             date = time = outcome = None
-            for r in game_rows:
+            time_td = rows[0].find("td", class_="timeContainer-3yNjf")
+            if time_td:
+                status = time_td.find("span", class_="eventStatusBox-19ZbY")
+                when = time_td.find("div", class_="time-3gPvd")
+                if status: outcome = status.get_text(strip=True)
+                if when:
+                    ds = when.find("span")
+                    tp = when.find("p")
+                    if ds: date = ds.get_text(strip=True)
+                    if tp: time = tp.get_text(strip=True)
+
+            for r in rows:
                 tds = r.find_all("td")
                 if len(tds) < 3:
                     continue
-                meta = {"eid": eid, "season": year, "week": week}
-                time_td = r.find("td", class_="timeContainer-3yNjf")
-                if time_td:
-                    status = time_td.find("span", class_="eventStatusBox-19ZbY")
-                    when = time_td.find("div", class_="time-3gPvd")
-                    if status: outcome = status.get_text(strip=True)
-                    if when:
-                        ds = when.find("span")
-                        tp = when.find("p")
-                        if ds: date = ds.get_text(strip=True)
-                        if tp: time = tp.get_text(strip=True)
-                meta["date"] = date
-                meta["time"] = time
-                meta["outcome"] = outcome
-                meta["team"] = tds[1].get_text(strip=True)
-                meta["score"] = tds[2].get_text(strip=True)
+                meta = {
+                    "eid": eid,
+                    "season": year,
+                    "week": week,
+                    "date": date,
+                    "time": time,
+                    "outcome": outcome,
+                    "team": tds[1].get_text(strip=True),
+                    "score": tds[2].get_text(strip=True),
+                }
                 metadata_rows.append(meta)
 
         meta_df = pd.DataFrame(metadata_rows)
