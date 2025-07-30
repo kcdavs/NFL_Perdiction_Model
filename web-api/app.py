@@ -176,7 +176,7 @@ def load_and_pivot_acl(filepath, label):
     final_columns = metadata + interleaved_cols
     return df[final_columns]
 
-# Combine and render
+# Combine and push only
 @app.route("/combined/<int:year>/<int:week>")
 def combined_view(year, week):
     try:
@@ -191,7 +191,7 @@ def combined_view(year, week):
         merged = pd.merge(meta_df, json_df, on=["eid", "team"], how="left")
         csv = merged.to_csv(index=False)
         push_csv_to_github(csv, year, week)
-        return Response(csv, mimetype="text/csv")
+        return Response(f"✅ {year} Week {week} uploaded to GitHub", mimetype="text/plain")
 
     except Exception as e:
         return Response(f"❌ Error: {e}", status=500, mimetype="text/plain")
