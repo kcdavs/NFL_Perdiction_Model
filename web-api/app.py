@@ -7,6 +7,7 @@ from flask import Flask, Response
 from bs4 import BeautifulSoup
 from urllib.parse import urlparse, parse_qs
 from tabulate import load_and_pivot_acl
+from github_writer import push_csv_to_github
 
 app = Flask(__name__)
 
