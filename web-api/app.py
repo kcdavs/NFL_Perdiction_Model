@@ -86,8 +86,14 @@ def fetch_and_tabulate(year, week):
 def fetch_and_save_to_github(year, week):
     try:
         seid_map = {
-            2018: 4494, 2019: 4520, 2020: 4546,
-            2021: 4572, 2022: 4598, 2023: 4624
+            2018: 4494,
+            2019: 5703,
+            2020: 8582,
+            2021: 29178,
+            2022: 38109,
+            2023: 38292,
+            2024: 42499,
+            2025: 59654
         }
         seid = seid_map.get(year)
         egid = 10 + (week - 1)
