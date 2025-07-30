@@ -70,7 +70,12 @@ def fetch_and_tabulate(year, week):
                 meta["score"] = tds[2].get_text(strip=True) if len(tds) > 2 else None
                 metadata_rows.append(meta)
 
-        meta_df = pd.DataFrame(metadata_rows).dropna(subset=["team"])
+        meta_df = pd.DataFrame(metadata_rows)
+        if "team" in meta_df.columns:
+            meta_df = meta_df.dropna(subset=["team"])
+        else:
+            meta_df["team"] = None  # fallback so rest of pipeline doesn't crash
+
 
         # Step 2: Fetch JSON odds
         eid_list = ",".join(map(str, eid_order))
