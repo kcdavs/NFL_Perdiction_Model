@@ -142,8 +142,9 @@ def fetch_urls_for_week(year, week):
         return Response(f"❌ Error:\n{e}\n\n{tb}", status=500, mimetype="text/plain")
 
 @app.route("/games/<int:year>/<int:week>")
-def display_html_scrape(year, week):
+def raw_games_html(year, week):
     try:
+        # Calculate egid and seid (use your map)
         seid_map = {
             2018: 4494,
             2019: 4520,
@@ -158,48 +159,16 @@ def display_html_scrape(year, week):
 
         egid = 10 + (week - 1)
         url = f"https://odds.bookmakersreview.com/nfl/?egid={egid}&seid={seid}"
-        res = requests.get(url)
-        soup = BeautifulSoup(res.text, "html.parser")
 
-        games_data = []
-        game_divs = soup.find_all("div", class_="container-AYhX9")
+        headers = {"User-Agent": "Mozilla/5.0"}  # mimic browser
+        res = requests.get(url, headers=headers, timeout=10)
+        res.raise_for_status()
 
-        for game in game_divs:
-            game_info = {}
-            game_info["date"] = game.get("data-grid-date", "")
-            time_tag = game.find("time")
-            game_info["time"] = time_tag.get_text(strip=True) if time_tag else ""
-
-            a_tag = game.find("a", href=True)
-            if a_tag and "eid=" in a_tag['href']:
-                parsed_url = urlparse(a_tag['href'])
-                params = parse_qs(parsed_url.query)
-                game_info["eid"] = params.get("eid", [None])[0]
-                game_info["egid"] = params.get("egid", [None])[0]
-                game_info["seid"] = params.get("seid", [None])[0]
-                game_info["game_url"] = a_tag['href']
-            else:
-                continue
-
-            teams = game.find_all("div", class_="participantName-3CqB8")
-            scores = game.find_all("span", class_="score-3EWei")
-
-            if len(teams) == 2:
-                game_info["team_1"] = teams[0].get_text(strip=True)
-                game_info["team_2"] = teams[1].get_text(strip=True)
-            if len(scores) == 2:
-                game_info["score_1"] = scores[0].get_text(strip=True)
-                game_info["score_2"] = scores[1].get_text(strip=True)
-
-            games_data.append(game_info)
-
-        df_games = pd.DataFrame(games_data)
-        html_table = df_games.to_html(index=False, classes="table table-striped", border=0)
-        return Response(f"<html><body>{html_table}</body></html>", mimetype="text/html")
+        # Return raw HTML as-is
+        return Response(res.text, mimetype="text/html")
 
     except Exception as e:
         return Response(f"❌ Error: {str(e)}", status=500, mimetype="text/plain")
-
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 3000))
     app.run(host="0.0.0.0", port=port)
