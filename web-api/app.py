@@ -76,6 +76,9 @@ def fetch_and_tabulate(year, week):
 
         # Step 3: Parse odds data
         df = load_and_pivot_acl(tmp_path, f"{year}_week{week}")
+        df["season"] = year
+        df["week"] = week
+
 
         # Step 4: Scrape HTML metadata
         seid_map = {
