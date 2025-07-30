@@ -41,14 +41,15 @@ def get_eids(year, week):
         raise ValueError("No EIDs found for this year/week")
     return eids
 
-
 @app.route("/fetch-and-tabulate/<int:year>/<int:week>")
 def fetch_and_tabulate(year, week):
     try:
+        # Step 1: Get EIDs
         eids = get_eids(year, week)
         eid_list = ",".join(eids)
         paid_list = ",".join(map(str, [8, 9, 10, 123, 44, 29, 16, 130, 54, 82, 36, 20, 127, 28, 84]))
 
+        # Step 2: Build GraphQL query
         query = (
             f"{{"
             f"A_BL: bestLines(catid: 338 eid: [{eid_list}] mtid: 401) "
@@ -60,7 +61,6 @@ def fetch_and_tabulate(year, week):
             f"}}"
         )
         url = "https://ms.production-us-east-1.bookmakersreview.com/ms-odds-v2/odds-v2-service?query=" + query
-
         headers = {
             "User-Agent": "Mozilla/5.0",
             "Accept": "application/json",
@@ -74,8 +74,63 @@ def fetch_and_tabulate(year, week):
             tmp.write(resp.text)
             tmp_path = tmp.name
 
+        # Step 3: Parse odds data
         df = load_and_pivot_acl(tmp_path, f"{year}_week{week}")
-        csv_data = df.to_csv(index=False)
+
+        # Step 4: Scrape HTML metadata
+        seid_map = {
+            2018: 4494, 2019: 5703, 2020: 8582,
+            2021: 29178, 2022: 38109, 2023: 38292,
+            2024: 42499, 2025: 59654
+        }
+        seid = seid_map.get(year)
+        egid = 10 + (week - 1)
+        url_html = f"https://odds.bookmakersreview.com/nfl/?egid={egid}&seid={seid}"
+        html_resp = requests.get(url_html, headers=headers)
+        html_resp.raise_for_status()
+
+        soup = BeautifulSoup(html_resp.text, "html.parser")
+        all_data = []
+
+        grid_containers = soup.find_all("div", class_="gridContainer-O4ezT")
+        for grid in grid_containers:
+            tables = grid.find_all("table", class_="tableGrid-2PF6A")
+            for table in tables:
+                rows = table.find_all("tr", class_="participantRow--z17q")
+                for i in range(0, len(rows), 2):
+                    row1, row2 = rows[i], rows[i + 1]
+
+                    def extract_info(r, skip_time=False):
+                        tds = r.find_all("td")
+                        if skip_time:
+                            tds = tds[1:]
+                        row = {"season": year, "week": week}
+                        time_td = r.find("td", class_="timeContainer-3yNjf")
+                        if time_td:
+                            outcome = time_td.find("span", class_="eventStatusBox-19ZbY")
+                            date = time_td.find("div", class_="time-3gPvd")
+                            row["outcome"] = outcome.get_text(strip=True) if outcome else None
+                            if date:
+                                ds = date.find("span")
+                                tp = date.find("p")
+                                row["date"] = ds.get_text(strip=True) if ds else None
+                                row["time"] = tp.get_text(strip=True) if tp else None
+                        team_td = tds[1] if len(tds) > 1 else None
+                        score_td = tds[2] if len(tds) > 2 else None
+                        row["team"] = team_td.get_text(strip=True) if team_td else None
+                        row["score"] = score_td.get_text(strip=True) if score_td else None
+                        return row
+
+                    all_data.append(extract_info(row1, skip_time=True))
+                    all_data.append(extract_info(row2, skip_time=False))
+
+        html_df = pd.DataFrame(all_data)
+        html_df = html_df.dropna(subset=["team"])
+
+        # Step 5: Merge odds data with HTML metadata
+        merged = df.merge(html_df, on=["season", "week", "team"], how="left")
+
+        csv_data = merged.to_csv(index=False)
         return Response(csv_data, mimetype="text/csv")
 
     except Exception as e:
