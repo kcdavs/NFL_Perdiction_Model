@@ -60,6 +60,8 @@ def extract_metadata(year, week):
         metadata.append({
             "eid": eid,
             "rotation": rotation,
+            "season": year,
+            "week": week,
             "date": date,
             "time": time,
             "team": team,
@@ -91,7 +93,7 @@ def get_json_df(eids, label):
     resp = requests.get(url, headers=headers, timeout=10)
     resp.raise_for_status()
 
-    with tempfile.NamedTemporaryFile(mode="w+", suffix=".json", delete=False) as tmp:
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as tmp:
         tmp.write(resp.text)
         tmp_path = tmp.name
 
@@ -124,9 +126,8 @@ def load_and_pivot_acl(filepath, label):
 
     df = pivot_df.merge(co, on=["eid", "partid"], how="left").merge(ol, on=["eid", "partid"], how="left")
     df["team"] = df["partid"].map(team_map)
-    df["jsons"] = label
 
-    metadata = ["jsons", "eid", "partid", "team", "perc", "opening_adj", "opening_ap"]
+    metadata = ["eid", "team", "perc", "opening_adj", "opening_ap"]
     adj_cols = [col for col in df.columns if col.startswith("adj_") and col != "opening_adj"]
     ap_cols = [col for col in df.columns if col.startswith("ap_") and col != "opening_ap"]
     suffixes = sorted(set(re.sub(r"^\D+_", "", col) for col in adj_cols + ap_cols), key=lambda x: int(x) if x.isdigit() else x)
