@@ -175,6 +175,55 @@ def fetch_and_save_to_github(year, week):
         tb = traceback.format_exc()
         return Response(f"❌ Error:\n{e}\n\n{tb}", status=500, mimetype="text/plain")
 
+@app.route("/metadata/<int:year>/<int:week>")
+def metadata_test(year, week):
+    try:
+        SEID_MAP = {
+            2018: 4494, 2019: 5703, 2020: 8582,
+            2021: 29178, 2022: 38109, 2023: 38292,
+            2024: 42499, 2025: 59654
+        }
+
+        seid = SEID_MAP.get(year)
+        if not seid:
+            return Response(f"No SEID found for year {year}", status=400)
+
+        egid = 10 + (week - 1)
+        url = f"https://odds.bookmakersreview.com/nfl/?egid={egid}&seid={seid}"
+        res = requests.get(url)
+        soup = BeautifulSoup(res.text, "html.parser")
+
+        rows = []
+        for game in soup.find_all("a", class_="wrapper-2OSHA", href=True):
+            row = {}
+            # Extract EID
+            parsed = urlparse(game["href"])
+            query = parse_qs(parsed.query)
+            eid = query.get("eid", [None])[0]
+            row["eid"] = eid
+
+            # Game time (day/time)
+            time_tag = game.find("div", class_="dateBox-3kF8a")
+            row["time"] = time_tag.text.strip() if time_tag else None
+
+            # Team names and scores
+            teams = game.find_all("div", class_="teamWrapper-11a8T")
+            if len(teams) == 2:
+                for i, t in enumerate(["away", "home"]):
+                    name_tag = teams[i].find("span", class_="teamName-1xh5H")
+                    score_tag = teams[i].find("span", class_="scoreWrapper-2r60i")
+                    row[f"{t}_team"] = name_tag.text.strip() if name_tag else None
+                    row[f"{t}_score"] = score_tag.text.strip() if score_tag else None
+
+            rows.append(row)
+
+        df = pd.DataFrame(rows)
+        return Response(df.to_csv(index=False), mimetype="text/csv")
+
+    except Exception as e:
+        tb = traceback.format_exc()
+        return Response(f"❌ Error:\n{e}\n\n{tb}", status=500, mimetype="text/plain")
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 3000))
     app.run(host="0.0.0.0", port=port)
