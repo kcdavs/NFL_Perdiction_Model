@@ -144,7 +144,20 @@ def fetch_urls_for_week(year, week):
 @app.route("/games/<int:year>/<int:week>")
 def display_html_scrape(year, week):
     try:
-        url = f"https://www.bookmakersreview.com/sports/nfl/week-{week}-{year}/"
+        seid_map = {
+            2018: 4494,
+            2019: 4520,
+            2020: 4546,
+            2021: 4572,
+            2022: 4598,
+            2023: 4624
+        }
+        seid = seid_map.get(year)
+        if seid is None:
+            return Response("❌ Unknown season ID (seid) for that year", status=400)
+
+        egid = 10 + (week - 1)
+        url = f"https://odds.bookmakersreview.com/nfl/?egid={egid}&seid={seid}"
         res = requests.get(url)
         soup = BeautifulSoup(res.text, "html.parser")
 
