@@ -23,6 +23,34 @@ TEAM_MAP = {
     1524: "Miami", 1528: "Tennessee", 1519: "Pittsburgh", 1520: "Cleveland"
 }
 
+def get_eids(year, week):
+    seid_map = {
+        2018: 4494, 2019: 4520, 2020: 4546,
+        2021: 4572, 2022: 4598, 2023: 4624
+    }
+    seid = seid_map.get(year)
+    if seid is None:
+        raise ValueError(f"Unknown SEID for year {year}")
+
+    egid = 10 + (week - 1)
+    url = f"https://odds.bookmakersreview.com/nfl/?egid={egid}&seid={seid}"
+    resp = requests.get(url)
+    resp.raise_for_status()
+
+    soup = BeautifulSoup(resp.text, "html.parser")
+    a_tags = soup.find_all("a", class_="wrapper-2OSHA")
+    eids = []
+    for a in a_tags:
+        href = a.get("href", "")
+        parsed = urlparse(href)
+        params = parse_qs(parsed.query)
+        eid = params.get("eid")
+        if eid:
+            eids.append(eid[0])
+    if not eids:
+        raise ValueError("No EIDs found for this year/week")
+    return eids
+
 @app.route("/fetch-and-tabulate/<int:year>/<int:week>")
 def fetch_and_tabulate(year, week):
     try:
