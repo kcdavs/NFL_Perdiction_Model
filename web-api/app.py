@@ -178,102 +178,68 @@ def fetch_and_save_to_github(year, week):
 import re
 from flask import render_template_string
 
-@app.route("/metadata/<int:year>/<int:week>")
-def metadata_test(year, week):
+@app.route("/metadataTest/<int:year>/<int:week>")
+def display_game_metadata(year, week):
     try:
-        SEID_MAP = {
-            2018: 4494, 2019: 5703, 2020: 8582,
-            2021: 29178, 2022: 38109, 2023: 38292,
-            2024: 42499, 2025: 59654
+        seid_map = {
+            2018: 4494,
+            2019: 5703,
+            2020: 8582,
+            2021: 29178,
+            2022: 38109,
+            2023: 38292,
+            2024: 42499,
+            2025: 59654,
         }
-        seid = SEID_MAP.get(year)
+
+        seid = seid_map.get(year)
         if not seid:
-            return f"No SEID for year {year}", 400
+            return Response(f"❌ Unknown SEID for year {year}", status=400)
 
         egid = 10 + (week - 1)
         url = f"https://odds.bookmakersreview.com/nfl/?egid={egid}&seid={seid}"
-        resp = requests.get(url)
-        resp.raise_for_status()
-        soup = BeautifulSoup(resp.text, "html.parser")
 
-        rows = []
-        # your old outer loops
-        for grid in soup.find_all("div", class_="gridContainer-O4ezT"):
-            for table in grid.find_all("table", class_="tableGrid-2PF6A"):
-                parts = table.find_all("tr", class_="participantRow--z17q")
-                # each game is two rows: time/status then teams
-                for i in range(0, len(parts), 2):
-                    row_time, row_team = parts[i], parts[i+1]
-                    data = {}
+        res = requests.get(url, timeout=10)
+        soup = BeautifulSoup(res.text, "html.parser")
 
-                    # 1) EID from the wrapper <a>
-                    wrapper = row_time.find_parent("a", href=True)
-                    qs = parse_qs(urlparse(wrapper["href"]).query)
-                    data["eid"] = qs.get("eid", [""])[0]
+        rows = soup.find_all("tr", class_="participantRow--z17q")
+        output_lines = []
 
-                    # 2) time / date / status
-                    tc = row_time.find("td", class_="timeContainer-3yNjf")
-                    if tc:
-                        ev = tc.find("span", class_="eventStatusBox-19ZbY")
-                        tm = tc.find("div",  class_="time-3gPvd")
-                        data["status"] = ev.get_text(strip=True) if ev else ""
-                        data["date"]   = tm.get_text(strip=True) if tm else ""
-                    else:
-                        data["status"] = data["date"] = ""
+        for row in rows:
+            try:
+                status = row.find("span", class_="eventStatusBox-19ZbY")
+                status_text = status.get_text(strip=True) if status else ""
 
-                    # 3) teams & scores
-                    # row_team has two <td class="participantCell-…"> cells, one away, one home
-                    cells = row_team.find_all("td", class_=re.compile(r".*participantCell.*"))
-                    if len(cells) >= 2:
-                        for side, cell in zip(("away", "home"), cells[:2]):
-                            nm = cell.find("span", class_=re.compile(r".*participantName.*"))
-                            sc = cell.find("span", class_=re.compile(r".*totalScore.*"))
-                            data[f"{side}_team"]  = nm.get_text(strip=True) if nm else ""
-                            data[f"{side}_score"] = sc.get_text(strip=True) if sc else ""
-                    else:
-                        data.update({
-                            "away_team": "", "away_score": "",
-                            "home_team": "", "home_score": ""
-                        })
+                rot_td = row.find("td", class_="rotation-3JAfZ")
+                rot = rot_td.get_text(strip=True) if rot_td else ""
 
-                    rows.append(data)
+                link_tag = rot_td.find("a") if rot_td else None
+                eid = None
+                if link_tag and "href" in link_tag.attrs:
+                    parsed = urlparse(link_tag["href"])
+                    params = parse_qs(parsed.query)
+                    eid = params.get("eid", [""])[0]
 
-        # render as HTML table
-        return render_template_string("""
-        <html><head>
-          <style>
-            body { font-family: sans-serif; }
-            table { border-collapse: collapse; width: 100%; margin-top: 1em; }
-            th, td { border: 1px solid #ccc; padding: 6px; text-align: center; }
-            th { background: #eee; }
-          </style>
-        </head><body>
-          <h2>Metadata for NFL {{year}} Week {{week}}</h2>
-          <table>
-            <tr>
-              <th>eid</th><th>date</th><th>status</th>
-              <th>away_team</th><th>away_score</th>
-              <th>home_team</th><th>home_score</th>
-            </tr>
-            {% for r in rows %}
-            <tr>
-              <td>{{r.eid}}</td>
-              <td>{{r.date}}</td>
-              <td>{{r.status}}</td>
-              <td>{{r.away_team}}</td>
-              <td>{{r.away_score}}</td>
-              <td>{{r.home_team}}</td>
-              <td>{{r.home_score}}</td>
-            </tr>
-            {% endfor %}
-          </table>
-        </body></html>
-        """, year=year, week=week, rows=rows)
+                time_div = row.find("div", class_="time-3gPvd")
+                date = time_div.find("span").get_text(strip=True) if time_div else ""
+                time = time_div.find("p").get_text(strip=True) if time_div and time_div.find("p") else ""
+
+                team_div = row.find("div", class_="participantName-3CqB8")
+                team = team_div.get_text(strip=True) if team_div else ""
+
+                score_span = row.find("span", class_="score-3EWei")
+                score = score_span.get_text(strip=True) if score_span else ""
+
+                line = f"{status_text},{rot},{eid},{date},{time},{team},{score}"
+                output_lines.append(line)
+            except Exception as inner:
+                output_lines.append(f"ERROR PARSING ROW: {inner}")
+
+        return Response("\n".join(output_lines), mimetype="text/plain")
 
     except Exception as e:
         tb = traceback.format_exc()
-        return f"❌ Error:\n{e}\n\n{tb}", 500
-
+        return Response(f"❌ Error:\n{e}\n\n{tb}", status=500, mimetype="text/plain")
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 3000))
