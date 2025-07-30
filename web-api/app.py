@@ -74,8 +74,7 @@ def fetch_and_tabulate(year, week):
         if "team" in meta_df.columns:
             meta_df = meta_df.dropna(subset=["team"])
         else:
-            meta_df["team"] = None  # fallback so rest of pipeline doesn't crash
-
+            meta_df["team"] = None
 
         # Step 2: Fetch JSON odds
         eid_list = ",".join(map(str, eid_order))
@@ -105,11 +104,12 @@ def fetch_and_tabulate(year, week):
         df["week"] = week
 
         inconsistencies = []
-        for eid in df["eid"].unique():
-            odds_teams = df[df["eid"] == eid]["mapped_team"].dropna().tolist()
-            meta_teams = meta_df[meta_df["eid"] == eid]["team"].dropna().tolist()
-            if sorted(odds_teams) != sorted(meta_teams):
-                inconsistencies.append((eid, odds_teams, meta_teams))
+        if "eid" in meta_df.columns:
+            for eid in df["eid"].unique():
+                odds_teams = df[df["eid"] == eid]["mapped_team"].dropna().tolist()
+                meta_teams = meta_df[meta_df["eid"] == eid]["team"].dropna().tolist()
+                if sorted(odds_teams) != sorted(meta_teams):
+                    inconsistencies.append((eid, odds_teams, meta_teams))
 
         if inconsistencies:
             error_msg = "Team mismatch for EIDs:\n"
