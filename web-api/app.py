@@ -23,6 +23,16 @@ TEAM_MAP = {
     1524: "Miami", 1528: "Tennessee", 1519: "Pittsburgh", 1520: "Cleveland"
 }
 
+
+@app.route("/eids/<int:year>/<int:week>")
+def eids_route(year, week):
+    try:
+        eids = get_eids(year, week)
+        return Response(",".join(eids), mimetype="text/plain")
+    except Exception as e:
+        tb = traceback.format_exc()
+        return Response(f"❌ Error:\n{e}\n\n{tb}", status=500, mimetype="text/plain")
+
 def get_eids(year, week):
     seid_map = {
         2018: 4494, 2019: 4520, 2020: 4546,
