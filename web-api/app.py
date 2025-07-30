@@ -26,7 +26,7 @@ TEAM_MAP = {
 @app.route("/fetch-and-tabulate/<int:year>/<int:week>")
 def fetch_and_tabulate(year, week):
     try:
-        # Step 1: Get EIDs
+        # Step 1: Get EIDs and metadata from HTML
         seid_lookup = {2018: 4494, 2019: 4520, 2020: 4546, 2021: 4572, 2022: 4598, 2023: 4624, 2024: 42499, 2025: 59654}
         seid = seid_lookup.get(year)
         egid = 10 + (week - 1)
@@ -49,6 +49,7 @@ def fetch_and_tabulate(year, week):
             eid_order.append(eid)
 
             game_rows = a.find_all("tr", class_="participantRow--z17q")
+            date = time = outcome = None
             for r in game_rows:
                 tds = r.find_all("td")
                 meta = {"eid": eid, "season": year, "week": week}
@@ -56,12 +57,15 @@ def fetch_and_tabulate(year, week):
                 if time_td:
                     status = time_td.find("span", class_="eventStatusBox-19ZbY")
                     when = time_td.find("div", class_="time-3gPvd")
-                    if status: meta["outcome"] = status.get_text(strip=True)
+                    if status: outcome = status.get_text(strip=True)
                     if when:
                         ds = when.find("span")
                         tp = when.find("p")
-                        if ds: meta["date"] = ds.get_text(strip=True)
-                        if tp: meta["time"] = tp.get_text(strip=True)
+                        if ds: date = ds.get_text(strip=True)
+                        if tp: time = tp.get_text(strip=True)
+                meta["date"] = date
+                meta["time"] = time
+                meta["outcome"] = outcome
                 meta["team"] = tds[1].get_text(strip=True) if len(tds) > 1 else None
                 meta["score"] = tds[2].get_text(strip=True) if len(tds) > 2 else None
                 metadata_rows.append(meta)
@@ -91,12 +95,10 @@ def fetch_and_tabulate(year, week):
 
         df = load_and_pivot_acl(tmp_path, f"{year}_week{week}")
 
-        # Add team name from mapping just for verification
         df["mapped_team"] = df["partid"].map(TEAM_MAP)
         df["season"] = year
         df["week"] = week
 
-        # Check team consistency for each eid
         inconsistencies = []
         for eid in df["eid"].unique():
             odds_teams = df[df["eid"] == eid]["mapped_team"].dropna().tolist()
@@ -107,20 +109,19 @@ def fetch_and_tabulate(year, week):
         if inconsistencies:
             error_msg = "Team mismatch for EIDs:\n"
             for eid, json_teams, html_teams in inconsistencies:
-                error_msg += f"EID {eid}: JSON={json_teams}, HTML={html_teams}\n"
-            return Response(error_msg, status=500, mimetype="text/plain")
+                error_msg += f"EID {eid}:\n  JSON: {json_teams}\n  HTML: {html_teams}\n\n"
+            return Response(error_msg, status=400, mimetype="text/plain")
 
-        # Create row index to preserve metadata order
         meta_df["meta_idx"] = meta_df.groupby("eid").cumcount()
         df["meta_idx"] = df.groupby("eid").cumcount()
 
         merged = df.merge(meta_df, on=["eid", "season", "week", "meta_idx"], how="left")
         merged.drop(columns=["meta_idx", "mapped_team"], inplace=True)
 
-        # Final column order: metadata → JSON betting data → IDs
         meta_cols = ["season", "week", "date", "time", "team", "score", "outcome"]
         betting_cols = [c for c in merged.columns if c.startswith("adj_") or c.startswith("ap_") or c in ["perc", "opening_adj", "opening_ap"]]
-        final_cols = meta_cols + betting_cols + ["eid", "partid"]
+        id_cols = ["eid", "partid"]
+        final_cols = meta_cols + betting_cols + id_cols
         merged = merged[final_cols]
 
         csv_data = merged.to_csv(index=False)
