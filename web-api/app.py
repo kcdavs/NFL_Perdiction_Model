@@ -51,7 +51,6 @@ def fetch_and_tabulate(year, week):
             if len(rows) != 2:
                 continue
 
-            # Extract date/time from first row
             date = time = outcome = None
             time_td = rows[0].find("td", class_="timeContainer-3yNjf")
             if time_td:
@@ -69,7 +68,7 @@ def fetch_and_tabulate(year, week):
                 if len(tds) < 3:
                     continue
                 meta = {
-                    "eid": eid,
+                    "eid": int(eid),
                     "season": year,
                     "week": week,
                     "date": date,
@@ -81,6 +80,9 @@ def fetch_and_tabulate(year, week):
                 metadata_rows.append(meta)
 
         meta_df = pd.DataFrame(metadata_rows)
+        if "eid" not in meta_df.columns:
+            return Response("❌ Error: 'eid' column missing in metadata", status=500, mimetype="text/plain")
+        meta_df["eid"] = meta_df["eid"].astype(int)
         meta_df["meta_idx"] = meta_df.groupby("eid").cumcount()
 
         eid_list = ",".join(map(str, eid_order))
