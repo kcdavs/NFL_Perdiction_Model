@@ -43,24 +43,38 @@ def push_csv_to_github(csv_content, year, week, repo="kcdavs/NFL-Gambling-Addict
         raise Exception(f"GitHub upload failed: {res.status_code} – {res.text}")
     return res.json()
 
-# Utility to extract metadata from HTML
-def extract_metadata(year, week, egid=None):
-    seid_map = {
-        2018: 4494,
-        2019: 5703,
-        2020: 8582,
-        2021: 29178,
-        2022: 38109,
-        2023: 38292,
-        2024: 42499,
-        2025: 59654
-    }
-    seid = seid_map.get(year)
-    if seid is None:
-        raise ValueError("Unknown SEID")
+# SEID and EGID maps
+SEID_MAP = {
+    2018: 4494,
+    2019: 5703,
+    2020: 8582,
+    2021: 29178,
+    2022: 38109,
+    2023: 38292,
+    2024: 42499,
+    2025: 59654
+}
 
-    if egid is None:
-        egid = 10 + (week - 1) if week < 18 else 9 + week
+# EGID map: (year, week) -> egid
+EGID_MAP = {}
+for year in range(2018, 2021):  # 17 regular season weeks
+    for i in range(1, 18):
+        EGID_MAP[(year, i)] = 9 + i
+    for i, egid in enumerate([28, 29, 30, 31], start=18):
+        EGID_MAP[(year, i)] = egid
+for year in range(2021, 2026):  # 18 regular season weeks + 33573
+    for i in range(1, 18):
+        EGID_MAP[(year, i)] = 9 + i
+    EGID_MAP[(year, 18)] = 33573
+    for i, egid in enumerate([28, 29, 30, 31], start=19):
+        EGID_MAP[(year, i)] = egid
+
+# Utility to extract metadata from HTML
+def extract_metadata(year, week):
+    seid = SEID_MAP.get(year)
+    egid = EGID_MAP.get((year, week))
+    if seid is None or egid is None:
+        raise ValueError(f"Unknown SEID or EGID for {year} Week {week}")
 
     url = f"https://odds.bookmakersreview.com/nfl/?egid={egid}&seid={seid}"
     res = requests.get(url)
@@ -149,9 +163,13 @@ def load_and_pivot_acl(filepath, label):
     with open(filepath, "r") as f:
         data = json.load(f)
 
-    cl = pd.DataFrame(data["data"]["A_CL"])[["eid", "partid", "paid", "adj", "ap"]]
-    co = pd.DataFrame(data["data"]["A_CO"])[["eid", "partid", "perc"]].drop_duplicates()
-    ol = pd.DataFrame(data["data"]["A_OL"])[["eid", "partid", "adj", "ap"]]
+    cl = pd.DataFrame(data["data"].get("A_CL", []))
+    if cl.empty or not set(["eid", "partid", "paid", "adj", "ap"]).issubset(cl.columns):
+        raise Exception("A_CL is missing or incomplete in JSON response")
+    cl = cl[["eid", "partid", "paid", "adj", "ap"]]
+
+    co = pd.DataFrame(data["data"].get("A_CO", []))[["eid", "partid", "perc"]].drop_duplicates()
+    ol = pd.DataFrame(data["data"].get("A_OL", []))[["eid", "partid", "adj", "ap"]]
     ol.columns = ["eid", "partid", "opening_adj", "opening_ap"]
 
     cl_adj = cl.pivot_table(index=["eid", "partid"], columns="paid", values="adj").add_prefix("adj_")
@@ -182,13 +200,7 @@ def load_and_pivot_acl(filepath, label):
 @app.route("/combined/<int:year>/<int:week>")
 def combined_view(year, week):
     try:
-        special_egid = request.args.get("special")
-        if special_egid:
-            egid = int(special_egid)
-        else:
-            egid = 10 + (week - 1) if week < 18 else 9 + week
-
-        metadata = extract_metadata(year, week, egid=egid)
+        metadata = extract_metadata(year, week)
         eids = [m["eid"] for m in metadata if m["eid"] is not None]
         json_df = get_json_df(eids, label=f"{year}_week{week}")
 
