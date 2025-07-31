@@ -155,7 +155,7 @@ def load_and_pivot_acl(filepath, label):
         1529: "Jacksonville", 1535: "N.Y. Giants", 1527: "Indianapolis", 1522: "Cincinnati",
         1531: "Kansas City", 75380: "L.A. Chargers", 1543: "New Orleans", 1544: "Tampa Bay",
         1523: "N.Y. Jets", 1539: "Detroit", 1540: "Chicago", 1542: "Green Bay",
-        1533: "Oakland", 1550: "L.A. Rams", 1538: "Dallas", 1545: "Carolina",
+        1533: "Las Vegas", 1550: "L.A. Rams", 1538: "Dallas", 1545: "Carolina",
         1534: "Denver", 1548: "Seattle", 1537: "Washington", 1549: "Arizona",
         1524: "Miami", 1528: "Tennessee", 1519: "Pittsburgh", 1520: "Cleveland"
     }
