@@ -1,4 +1,4 @@
-from flask import Flask, Response
+from flask import Flask, Response, request
 import requests
 from bs4 import BeautifulSoup
 import pandas as pd
@@ -44,7 +44,7 @@ def push_csv_to_github(csv_content, year, week, repo="kcdavs/NFL-Gambling-Addict
     return res.json()
 
 # Utility to extract metadata from HTML
-def extract_metadata(year, week):
+def extract_metadata(year, week, egid=None):
     seid_map = {
         2018: 4494,
         2019: 5703,
@@ -59,7 +59,9 @@ def extract_metadata(year, week):
     if seid is None:
         raise ValueError("Unknown SEID")
 
-    egid = 10 + (week - 1)
+    if egid is None:
+        egid = 10 + (week - 1) if week < 18 else 9 + week
+
     url = f"https://odds.bookmakersreview.com/nfl/?egid={egid}&seid={seid}"
     res = requests.get(url)
     soup = BeautifulSoup(res.text, "html.parser")
@@ -180,7 +182,13 @@ def load_and_pivot_acl(filepath, label):
 @app.route("/combined/<int:year>/<int:week>")
 def combined_view(year, week):
     try:
-        metadata = extract_metadata(year, week)
+        special_egid = request.args.get("special")
+        if special_egid:
+            egid = int(special_egid)
+        else:
+            egid = 10 + (week - 1) if week < 18 else 9 + week
+
+        metadata = extract_metadata(year, week, egid=egid)
         eids = [m["eid"] for m in metadata if m["eid"] is not None]
         json_df = get_json_df(eids, label=f"{year}_week{week}")
 
