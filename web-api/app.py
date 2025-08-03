@@ -62,11 +62,14 @@ def extract_metadata(year, week):
     res = requests.get(url, headers={"User-Agent":USER_AGENT}, timeout=10)
     res.raise_for_status()
     soup = BeautifulSoup(res.text, "html.parser")
+
     rows = []
     for tr in soup.select("tr.participantRow--z17q"):
         eid = None
         a = tr.select_one("a.link-1Vzcm")
-        if a: eid = parse_qs(urlparse(a["href"]).query).get("eid",[None])[0]
+        if a:
+            eid_val = parse_qs(urlparse(a["href"]).query).get("eid", [None])[0]
+            eid = str(eid_val) if eid_val else None
         dt = tr.select_one("div.time-3gPvd")
         date = dt.select_one("span").get_text(strip=True) if dt else ""
         time = dt.select_one("p").get_text(strip=True) if dt else ""
@@ -78,8 +81,9 @@ def extract_metadata(year, week):
         rotation = rt.get_text(strip=True) if rt else ""
         ot = tr.select_one("span.eventStatusBox-19ZbY")
         outcome = ot.get_text(strip=True) if ot else ""
+
         rows.append({
-            "eid": str(eid) if eid else None,
+            "eid": eid,
             "season": year,
             "week": week,
             "date": date,
@@ -93,37 +97,38 @@ def extract_metadata(year, week):
 
 # Fetch & pivot JSON odds
 def get_json_df(eids):
-    q = (
-        f"{{A_BL: bestLines(catid:338 eid:[{','.join(eids)}] mtid:401) "
-        f"A_CL: currentLines(paid:{PAID_IDS} eid:[{','.join(eids)}] mtid:401) "
-        f"A_OL: openingLines(paid:8 eid:[{','.join(eids)}] mtid:401) "
-        f"A_CO: consensus(eid:[{','.join(eids)}] mtid:401) "
-        f"{{eid partid paid adj ap perc opening_adj opening_ap}}}}"
+    query = (
+        f"{{A_BL:bestLines(catid:338,eid:[{','.join(eids)}],mtid:401) "
+        f"A_CL:currentLines(paid:{PAID_IDS},eid:[{','.join(eids)}],mtid:401) "
+        f"A_OL:openingLines(paid:8,eid:[{','.join(eids)}],mtid:401) "
+        f"A_CO:consensus(eid:[{','.join(eids)}],mtid:401) "
+        f"{{eid,partid,paid,adj,ap,perc,opening_adj,opening_ap}}}}"
     )
-    url = "https://ms.production-us-east-1.bookmakersreview.com/ms-odds-v2/odds-v2-service?query="+q
+    url = "https://ms.production-us-east-1.bookmakersreview.com/ms-odds-v2/odds-v2-service?query=" + query
     resp = requests.get(url, headers={'User-Agent':USER_AGENT}, timeout=10)
     resp.raise_for_status()
-    with tempfile.NamedTemporaryFile(mode="w+",suffix=".json",delete=False) as tmp:
-        tmp.write(resp.text); fp=tmp.name
-    data = json.load(open(fp))
+    tmp = tempfile.NamedTemporaryFile(mode="w+",suffix=".json",delete=False)
+    tmp.write(resp.text)
+    tmp.flush()
+    tmp.close()
+    data = json.load(open(tmp.name))
     cl = pd.DataFrame(data['data']['A_CL'])[['eid','partid','paid','adj','ap']]
     co = pd.DataFrame(data['data']['A_CO'])[['eid','partid','perc']].drop_duplicates()
     ol = pd.DataFrame(data['data']['A_OL'])[['eid','partid','adj','ap']]
-    ol.columns=['eid','partid','opening_adj','opening_ap']
+    ol.columns = ['eid','partid','opening_adj','opening_ap']
     cl_adj = cl.pivot_table(index=['eid','partid'],columns='paid',values='adj').add_prefix('adj_')
     cl_ap  = cl.pivot_table(index=['eid','partid'],columns='paid',values='ap').add_prefix('ap_')
     df = cl_adj.join(cl_ap).reset_index().merge(co,on=['eid','partid'],how='left').merge(ol,on=['eid','partid'],how='left')
-    df['eid']=df['eid'].astype(str)
+    df['eid'] = df['eid'].astype(str)
     return df
 
 @app.route('/combined/<int:year>/<int:week>')
-def combined_view(year,week):
+def combined_view(year, week):
     try:
-        meta = extract_metadata(year,week)
+        meta = extract_metadata(year, week)
         df_meta = pd.DataFrame(meta)
-        # dedupe eids to avoid duplicate query entries
-        eids = list(dict.fromkeys(eids))
-        eids = [r['eid'] for r in meta if r['eid']]
+        # dedupe eids and preserve order
+        eids = list(dict.fromkeys(r['eid'] for r in meta if r['eid']))
         df_odds = get_json_df(eids)
         merged = pd.merge(df_meta, df_odds, on='eid', how='left')
         csv = merged.to_csv(index=False)
