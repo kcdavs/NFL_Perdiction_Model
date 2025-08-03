@@ -1,4 +1,4 @@
-from flask import Flask, Response, request
+from flask import Flask, Response
 import requests
 from bs4 import BeautifulSoup
 import pandas as pd
@@ -18,7 +18,7 @@ def push_csv_to_github(csv_content, year, week,
     if not token:
         raise Exception("Missing GITHUB_TOKEN environment variable")
 
-    filename = f"odds/{year}/week{str(week).zfill(2)}.csv"
+    filename = f"odds/{year}/week{week:02d}.csv"
     api_url = f"https://api.github.com/repos/{repo}/contents/{filename}"
 
     headers = {"Authorization": f"token {token}",
@@ -38,7 +38,7 @@ def push_csv_to_github(csv_content, year, week,
     res.raise_for_status()
     return res.json()
 
-# SEID and EGID maps
+# SEID and EGID lookup maps
 def build_maps():
     seid_map = {2018:4494,2019:5703,2020:8582,2021:29178,2022:38109,2023:38292,2024:42499,2025:59654}
     egid_map = {}
@@ -69,14 +69,14 @@ def extract_metadata(year, week):
     rows = []
     for tr in soup.select("tr.participantRow--z17q"):
         eid = None
-        a = tr.select_one("a.link-1Vzcm")
-        if a:
-            eid_val = parse_qs(urlparse(a["href"]).query).get("eid", [None])[0]
-            eid = str(eid_val) if eid_val else None
+        link = tr.select_one("a.link-1Vzcm")
+        if link:
+            raw = parse_qs(urlparse(link["href"]).query).get("eid", [None])[0]
+            eid = str(raw) if raw else None
 
-        date_tag = tr.select_one("div.time-3gPvd")
-        date = date_tag.select_one("span").get_text(strip=True) if date_tag else ""
-        time = date_tag.select_one("p").get_text(strip=True) if date_tag else ""
+        dt = tr.select_one("div.time-3gPvd")
+        date = dt.select_one("span").get_text(strip=True) if dt else ""
+        time = dt.select_one("p").get_text(strip=True) if dt else ""
 
         tag = tr.select_one("div.participantName-3CqB8")
         team = tag.get_text(strip=True) if tag else ""
@@ -103,16 +103,19 @@ def extract_metadata(year, week):
 
 # Fetch & pivot JSON odds
 def get_json_df(eids):
+    # dedupe EIDs
+    unique_eids = list(dict.fromkeys(eids))
     query = (
-        f"{{A_BL: bestLines(catid:338 eid:[{','.join(eids)}] mtid:401) "
-        f"A_CL: currentLines(paid:{PAID_IDS} eid:[{','.join(eids)}] mtid:401) "
-        f"A_OL: openingLines(paid:8 eid:[{','.join(eids)}] mtid:401) "
-        f"A_CO: consensus(eid:[{','.join(eids)}] mtid:401) "
+        f"{{A_BL: bestLines(catid:338 eid:[{','.join(unique_eids)}] mtid:401) "
+        f"A_CL: currentLines(paid:{PAID_IDS} eid:[{','.join(unique_eids)}] mtid:401) "
+        f"A_OL: openingLines(paid:8 eid:[{','.join(unique_eids)}] mtid:401) "
+        f"A_CO: consensus(eid:[{','.join(unique_eids)}] mtid:401) "
         f"{{eid,partid,paid,adj,ap,perc,opening_adj,opening_ap}}}}"
     )
     url = "https://ms.production-us-east-1.bookmakersreview.com/ms-odds-v2/odds-v2-service?query=" + query
     resp = requests.get(url, headers={ 'User-Agent': USER_AGENT }, timeout=10)
     resp.raise_for_status()
+
     tmp = tempfile.NamedTemporaryFile(mode="w+", suffix=".json", delete=False)
     tmp.write(resp.text)
     tmp.flush()
@@ -126,20 +129,20 @@ def get_json_df(eids):
 
     cl_adj = cl.pivot_table(index=['eid','partid'], columns='paid', values='adj').add_prefix('adj_')
     cl_ap  = cl.pivot_table(index=['eid','partid'], columns='paid', values='ap').add_prefix('ap_')
-    df = cl_adj.join(cl_ap).reset_index()
-    df = df.merge(co, on=['eid','partid'], how='left').merge(ol, on=['eid','partid'], how='left')
+    df     = cl_adj.join(cl_ap).reset_index()
+    df     = df.merge(co, on=['eid','partid'], how='left').merge(ol, on=['eid','partid'], how='left')
     df['eid'] = df['eid'].astype(str)
     return df
 
 @app.route('/combined/<int:year>/<int:week>')
 def combined_view(year, week):
     try:
-        meta = extract_metadata(year, week)
-        df_meta = pd.DataFrame(meta)
-        eids = list(dict.fromkeys(r['eid'] for r in meta if r['eid']))
-        df_odds = get_json_df(eids)
+        meta   = extract_metadata(year, week)
+        df_meta= pd.DataFrame(meta)
+        eids   = [r['eid'] for r in meta if r['eid']]
+        df_odds= get_json_df(eids)
         merged = pd.merge(df_meta, df_odds, on='eid', how='left')
-        csv = merged.to_csv(index=False)
+        csv    = merged.to_csv(index=False)
         push_csv_to_github(csv, year, week)
         return Response(f"✅ {year} Week {week} uploaded", mimetype='text/plain')
     except Exception as e:
@@ -148,4 +151,3 @@ def combined_view(year, week):
 if __name__=='__main__':
     port = int(os.getenv('PORT', 3000))
     app.run(host='0.0.0.0', port=port)
-
