@@ -1,4 +1,4 @@
-from flask import Flask, Response
+from flask import Flask, Response, request
 import requests
 from bs4 import BeautifulSoup
 import pandas as pd
@@ -116,7 +116,7 @@ def extract_metadata(year, week):
 
     return metadata
 
-def get_json_df(eids, label, season_map):
+def get_json_df(eids, label):
     query = (
         f"{{"
         f"A_BL: bestLines(catid: 338 eid: [{','.join(eids)}] mtid: 401) "
@@ -141,9 +141,21 @@ def get_json_df(eids, label, season_map):
         tmp.write(resp.text)
         tmp_path = tmp.name
 
-    return load_and_pivot_acl(tmp_path, label, season_map)
+    return load_and_pivot_acl(tmp_path, label)
 
-def load_and_pivot_acl(filepath, label, season_map):
+def load_and_pivot_acl(filepath, label):
+    team_map = {
+        1536: "Philadelphia", 1546: "Atlanta", 1541: "Minnesota", 1547: "San Francisco",
+        1525: "New England", 1530: "Houston", 1521: "Baltimore", 1526: "Buffalo",
+        1529: "Jacksonville", 1535: "N.Y. Giants", 1527: "Indianapolis", 1522: "Cincinnati",
+        1531: "Kansas City", 75380: "L.A. Chargers", 1543: "New Orleans", 1544: "Tampa Bay",
+        1523: "N.Y. Jets", 1539: "Detroit", 1540: "Chicago", 1542: "Green Bay",
+        # We remove hardcoding 1533 here to avoid conflict, will assign partid later
+        1550: "L.A. Rams", 1538: "Dallas", 1545: "Carolina",
+        1534: "Denver", 1548: "Seattle", 1537: "Washington", 1549: "Arizona",
+        1524: "Miami", 1528: "Tennessee", 1519: "Pittsburgh", 1520: "Cleveland"
+    }
+
     with open(filepath, "r") as f:
         data = json.load(f)
 
@@ -152,8 +164,8 @@ def load_and_pivot_acl(filepath, label, season_map):
         raise Exception("A_CL is missing or incomplete in JSON response")
     cl = cl[["eid", "partid", "paid", "adj", "ap"]]
 
-    co = pd.DataFrame(data["data"].get("A_CO", []))["eid partid perc".split()].drop_duplicates()
-    ol = pd.DataFrame(data["data"].get("A_OL", []))["eid partid adj ap".split()]
+    co = pd.DataFrame(data["data"].get("A_CO", []))[["eid", "partid", "perc"]].drop_duplicates()
+    ol = pd.DataFrame(data["data"].get("A_OL", []))[["eid", "partid", "adj", "ap"]]
     ol.columns = ["eid", "partid", "opening_adj", "opening_ap"]
 
     cl_adj = cl.pivot_table(index=["eid", "partid"], columns="paid", values="adj").add_prefix("adj_")
@@ -161,56 +173,48 @@ def load_and_pivot_acl(filepath, label, season_map):
     pivot_df = cl_adj.join(cl_ap).reset_index()
 
     df = pivot_df.merge(co, on=["eid", "partid"], how="left").merge(ol, on=["eid", "partid"], how="left")
-
-    def map_team(partid, eid):
-        season = season_map.get(str(eid))
-        if partid == 1533:
-            return "Oakland" if season and season < 2020 else "Las Vegas"
-        team_map = {
-            1536: "Philadelphia", 1546: "Atlanta", 1541: "Minnesota", 1547: "San Francisco",
-            1525: "New England", 1530: "Houston", 1521: "Baltimore", 1526: "Buffalo",
-            1529: "Jacksonville", 1535: "N.Y. Giants", 1527: "Indianapolis", 1522: "Cincinnati",
-            1531: "Kansas City", 75380: "L.A. Chargers", 1543: "New Orleans", 1544: "Tampa Bay",
-            1523: "N.Y. Jets", 1539: "Detroit", 1540: "Chicago", 1542: "Green Bay",
-            1534: "Denver", 1548: "Seattle", 1537: "Washington", 1549: "Arizona",
-            1524: "Miami", 1528: "Tennessee", 1519: "Pittsburgh", 1520: "Cleveland",
-            1550: "L.A. Rams", 1538: "Dallas", 1545: "Carolina"
-        }
-        return team_map.get(partid)
-
-    df["team"] = df.apply(lambda row: map_team(row["partid"], row["eid"]), axis=1)
-
-    metadata = ["eid", "team", "perc", "opening_adj", "opening_ap"]
-    adj_cols = [col for col in df.columns if col.startswith("adj_") and col != "opening_adj"]
-    ap_cols = [col for col in df.columns if col.startswith("ap_") and col != "opening_ap"]
-    suffixes = sorted(set(re.sub(r"^\D+_", "", col) for col in adj_cols + ap_cols), key=lambda x: int(x) if x.isdigit() else x)
-
-    interleaved_cols = []
-    for suffix in suffixes:
-        adj = f"adj_{suffix}"
-        ap = f"ap_{suffix}"
-        if adj in df.columns:
-            interleaved_cols.append(adj)
-        if ap in df.columns:
-            interleaved_cols.append(ap)
-
-    final_columns = metadata + interleaved_cols
-    return df[final_columns]
+    df["team"] = df["partid"].map(team_map)
+    df["eid"] = df["eid"].astype(str)
+    return df
 
 @app.route("/combined/<int:year>/<int:week>")
 def combined_view(year, week):
     try:
         metadata = extract_metadata(year, week)
         eids = [m["eid"] for m in metadata if m["eid"] is not None]
-        season_map = {str(m["eid"]): m["season"] for m in metadata}
 
-        json_df = get_json_df(eids, label=f"{year}_week{week}", season_map=season_map)
+        json_df = get_json_df(eids, label=f"{year}_week{week}")
 
         meta_df = pd.DataFrame(metadata)
         meta_df["eid"] = meta_df["eid"].astype(str)
-        json_df["eid"] = json_df["eid"].astype(str)
 
-        merged = pd.merge(meta_df, json_df, on=["eid", "team"], how="left")
+        # Assign partid for Oakland/Las Vegas problem in metadata
+        reverse_team_map = {
+            "CAROLINA": 1545, "DALLAS": 1538, "L.A. RAMS": 1550, "PITTSBURGH": 1519,
+            "CLEVELAND": 1520, "BALTIMORE": 1521, "CINCINNATI": 1522, "N.Y. JETS": 1523,
+            "MIAMI": 1524, "NEW ENGLAND": 1525, "BUFFALO": 1526, "INDIANAPOLIS": 1527,
+            "TENNESSEE": 1528, "JACKSONVILLE": 1529, "HOUSTON": 1530, "KANSAS CITY": 1531,
+            "DENVER": 1534, "N.Y. GIANTS": 1535, "PHILADELPHIA": 1536, "WASHINGTON": 1537,
+            "DETROIT": 1539, "CHICAGO": 1540, "MINNESOTA": 1541, "GREEN BAY": 1542,
+            "NEW ORLEANS": 1543, "TAMPA BAY": 1544, "ATLANTA": 1546, "SAN FRANCISCO": 1547,
+            "SEATTLE": 1548, "ARIZONA": 1549, "L.A. CHARGERS": 75380,
+            # Oakland / Las Vegas share partid 1533
+            "OAKLAND": 1533, "LAS VEGAS": 1533
+        }
+
+        def assign_partid(row):
+            return reverse_team_map.get(row["team"].strip().upper(), None)
+
+        meta_df["partid"] = meta_df.apply(assign_partid, axis=1)
+
+        json_df["eid"] = json_df["eid"].astype(str)
+        json_df["partid"] = json_df["partid"].astype(int)
+
+        merged = pd.merge(meta_df, json_df, on=["eid", "partid"], how="left")
+
+        # Preserve metadata's team name (Oakland vs Las Vegas) exactly
+        merged["team"] = merged["team"]
+
         csv = merged.to_csv(index=False)
         push_csv_to_github(csv, year, week)
         return Response(f"✅ {year} Week {week} uploaded to GitHub", mimetype="text/plain")
@@ -221,4 +225,3 @@ def combined_view(year, week):
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 3000))
     app.run(host="0.0.0.0", port=port)
-
