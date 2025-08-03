@@ -215,11 +215,15 @@ def combined_view(year, week):
         json_df["partid"] = json_df["partid"].astype(int)
 
         merged = pd.merge(meta_df, json_df, on=["eid", "partid"], how="left")
-
-        # Preserve original team string from metadata
-        merged["team"] = merged["team"]
-
+        
+        # Fix team column after merge (handle suffixes)
+        if "team_x" in merged.columns and "team_y" in merged.columns:
+            merged = merged.rename(columns={"team_x": "team"}).drop(columns=["team_y"])
+        elif "team" not in merged.columns:
+            merged["team"] = meta_df["team"]
+        
         csv = merged.to_csv(index=False)
+
         push_csv_to_github(csv, year, week)
         return Response(f"✅ {year} Week {week} uploaded to GitHub", mimetype="text/plain")
 
