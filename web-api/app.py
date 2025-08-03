@@ -43,7 +43,6 @@ def push_csv_to_github(csv_content, year, week, repo="kcdavs/NFL-Gambling-Addict
         raise Exception(f"GitHub upload failed: {res.status_code} – {res.text}")
     return res.json()
 
-# SEID and EGID maps
 SEID_MAP = {
     2018: 4494,
     2019: 5703,
@@ -55,21 +54,19 @@ SEID_MAP = {
     2025: 59654
 }
 
-# EGID map: (year, week) -> egid
 EGID_MAP = {}
-for year in range(2018, 2021):  # 17 regular season weeks
+for year in range(2018, 2021):
     for i in range(1, 18):
         EGID_MAP[(year, i)] = 9 + i
     for i, egid in enumerate([28, 29, 30, 31], start=18):
         EGID_MAP[(year, i)] = egid
-for year in range(2021, 2026):  # 18 regular season weeks + 33573
+for year in range(2021, 2026):
     for i in range(1, 18):
         EGID_MAP[(year, i)] = 9 + i
     EGID_MAP[(year, 18)] = 33573
     for i, egid in enumerate([28, 29, 30, 31], start=19):
         EGID_MAP[(year, i)] = egid
 
-# Utility to extract metadata from HTML
 def extract_metadata(year, week):
     seid = SEID_MAP.get(year)
     egid = EGID_MAP.get((year, week))
@@ -119,8 +116,7 @@ def extract_metadata(year, week):
 
     return metadata
 
-# Utility to get JSON data using EIDs
-def get_json_df(eids, label):
+def get_json_df(eids, label, season_map):
     query = (
         f"{{"
         f"A_BL: bestLines(catid: 338 eid: [{','.join(eids)}] mtid: 401) "
@@ -145,21 +141,9 @@ def get_json_df(eids, label):
         tmp.write(resp.text)
         tmp_path = tmp.name
 
-    return load_and_pivot_acl(tmp_path, label)
+    return load_and_pivot_acl(tmp_path, label, season_map)
 
-# Parsing odds data
-def load_and_pivot_acl(filepath, label):
-    team_map = {
-        1536: "Philadelphia", 1546: "Atlanta", 1541: "Minnesota", 1547: "San Francisco",
-        1525: "New England", 1530: "Houston", 1521: "Baltimore", 1526: "Buffalo",
-        1529: "Jacksonville", 1535: "N.Y. Giants", 1527: "Indianapolis", 1522: "Cincinnati",
-        1531: "Kansas City", 75380: "L.A. Chargers", 1543: "New Orleans", 1544: "Tampa Bay",
-        1523: "N.Y. Jets", 1539: "Detroit", 1540: "Chicago", 1542: "Green Bay",
-        1533: "Las Vegas", 1550: "L.A. Rams", 1538: "Dallas", 1545: "Carolina",
-        1534: "Denver", 1548: "Seattle", 1537: "Washington", 1549: "Arizona",
-        1524: "Miami", 1528: "Tennessee", 1519: "Pittsburgh", 1520: "Cleveland"
-    }
-
+def load_and_pivot_acl(filepath, label, season_map):
     with open(filepath, "r") as f:
         data = json.load(f)
 
@@ -177,7 +161,25 @@ def load_and_pivot_acl(filepath, label):
     pivot_df = cl_adj.join(cl_ap).reset_index()
 
     df = pivot_df.merge(co, on=["eid", "partid"], how="left").merge(ol, on=["eid", "partid"], how="left")
-    df["team"] = df["partid"].map(team_map)
+
+    def map_team(partid, eid):
+        eid_str = str(eid)
+        season = season_map.get(eid_str)
+        if partid == 1533:
+            return "Oakland" if season and season < 2020 else "Las Vegas"
+        team_map = {
+            1536: "Philadelphia", 1546: "Atlanta", 1541: "Minnesota", 1547: "San Francisco",
+            1525: "New England", 1530: "Houston", 1521: "Baltimore", 1526: "Buffalo",
+            1529: "Jacksonville", 1535: "N.Y. Giants", 1527: "Indianapolis", 1522: "Cincinnati",
+            1531: "Kansas City", 75380: "L.A. Chargers", 1543: "New Orleans", 1544: "Tampa Bay",
+            1523: "N.Y. Jets", 1539: "Detroit", 1540: "Chicago", 1542: "Green Bay",
+            1550: "L.A. Rams", 1538: "Dallas", 1545: "Carolina",
+            1534: "Denver", 1548: "Seattle", 1537: "Washington", 1549: "Arizona",
+            1524: "Miami", 1528: "Tennessee", 1519: "Pittsburgh", 1520: "Cleveland"
+        }
+        return team_map.get(partid)
+
+    df["team"] = df.apply(lambda row: map_team(row["partid"], row["eid"]), axis=1)
 
     metadata = ["eid", "team", "perc", "opening_adj", "opening_ap"]
     adj_cols = [col for col in df.columns if col.startswith("adj_") and col != "opening_adj"]
@@ -196,13 +198,14 @@ def load_and_pivot_acl(filepath, label):
     final_columns = metadata + interleaved_cols
     return df[final_columns]
 
-# Combine and push only
 @app.route("/combined/<int:year>/<int:week>")
 def combined_view(year, week):
     try:
         metadata = extract_metadata(year, week)
         eids = [m["eid"] for m in metadata if m["eid"] is not None]
-        json_df = get_json_df(eids, label=f"{year}_week{week}")
+        season_map = {m["eid"]: m["season"] for m in metadata}
+
+        json_df = get_json_df(eids, label=f"{year}_week{week}", season_map=season_map)
 
         meta_df = pd.DataFrame(metadata)
         meta_df["eid"] = meta_df["eid"].astype(str)
@@ -219,3 +222,4 @@ def combined_view(year, week):
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 3000))
     app.run(host="0.0.0.0", port=port)
+
