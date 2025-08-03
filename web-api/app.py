@@ -179,16 +179,19 @@ def load_and_pivot_acl(filepath, label):
 
 @app.route("/combined/<int:year>/<int:week>")
 def combined_view(year, week):
+    import traceback
     try:
         metadata = extract_metadata(year, week)
+        print("Metadata sample:", metadata[:3])
+        meta_df = pd.DataFrame(metadata)
+        print("Columns in meta_df:", meta_df.columns)
+
+        if "team" not in meta_df.columns:
+            return Response("❌ Error: 'team' column missing in metadata", status=500, mimetype="text/plain")
+
         eids = [m["eid"] for m in metadata if m["eid"] is not None]
 
-        json_df = get_json_df(eids, label=f"{year}_week{week}")
-
-        meta_df = pd.DataFrame(metadata)
-        meta_df["eid"] = meta_df["eid"].astype(str)
-
-        # Assign partid for Oakland/Las Vegas problem in metadata
+        # Create partid map (including Oakland/Las Vegas special case)
         reverse_team_map = {
             "CAROLINA": 1545, "DALLAS": 1538, "L.A. RAMS": 1550, "PITTSBURGH": 1519,
             "CLEVELAND": 1520, "BALTIMORE": 1521, "CINCINNATI": 1522, "N.Y. JETS": 1523,
@@ -198,21 +201,22 @@ def combined_view(year, week):
             "DETROIT": 1539, "CHICAGO": 1540, "MINNESOTA": 1541, "GREEN BAY": 1542,
             "NEW ORLEANS": 1543, "TAMPA BAY": 1544, "ATLANTA": 1546, "SAN FRANCISCO": 1547,
             "SEATTLE": 1548, "ARIZONA": 1549, "L.A. CHARGERS": 75380,
-            # Oakland / Las Vegas share partid 1533
             "OAKLAND": 1533, "LAS VEGAS": 1533
         }
 
         def assign_partid(row):
-            return reverse_team_map.get(row["team"].strip().upper(), None)
+            team_upper = row["team"].strip().upper()
+            return reverse_team_map.get(team_upper, None)
 
         meta_df["partid"] = meta_df.apply(assign_partid, axis=1)
 
+        json_df = get_json_df(eids, label=f"{year}_week{week}")
         json_df["eid"] = json_df["eid"].astype(str)
         json_df["partid"] = json_df["partid"].astype(int)
 
         merged = pd.merge(meta_df, json_df, on=["eid", "partid"], how="left")
 
-        # Preserve metadata's team name (Oakland vs Las Vegas) exactly
+        # Preserve original team string from metadata
         merged["team"] = merged["team"]
 
         csv = merged.to_csv(index=False)
@@ -220,7 +224,10 @@ def combined_view(year, week):
         return Response(f"✅ {year} Week {week} uploaded to GitHub", mimetype="text/plain")
 
     except Exception as e:
-        return Response(f"❌ Error: {e}", status=500, mimetype="text/plain")
+        tb = traceback.format_exc()
+        print(f"Error processing {year} week {week}:\n{tb}")
+        return Response(f"❌ Error: {e}\n\n{tb}", status=500, mimetype="text/plain")
+
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 3000))
