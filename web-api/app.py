@@ -1,4 +1,4 @@
-from flask import Flask, Response, request
+from flask import Flask, Response
 import requests
 from bs4 import BeautifulSoup
 import pandas as pd
@@ -152,8 +152,8 @@ def load_and_pivot_acl(filepath, label, season_map):
         raise Exception("A_CL is missing or incomplete in JSON response")
     cl = cl[["eid", "partid", "paid", "adj", "ap"]]
 
-    co = pd.DataFrame(data["data"].get("A_CO", []))[["eid", "partid", "perc"]].drop_duplicates()
-    ol = pd.DataFrame(data["data"].get("A_OL", []))[["eid", "partid", "adj", "ap"]]
+    co = pd.DataFrame(data["data"].get("A_CO", []))["eid partid perc".split()].drop_duplicates()
+    ol = pd.DataFrame(data["data"].get("A_OL", []))["eid partid adj ap".split()]
     ol.columns = ["eid", "partid", "opening_adj", "opening_ap"]
 
     cl_adj = cl.pivot_table(index=["eid", "partid"], columns="paid", values="adj").add_prefix("adj_")
@@ -163,8 +163,7 @@ def load_and_pivot_acl(filepath, label, season_map):
     df = pivot_df.merge(co, on=["eid", "partid"], how="left").merge(ol, on=["eid", "partid"], how="left")
 
     def map_team(partid, eid):
-        eid_str = str(eid)
-        season = season_map.get(eid_str)
+        season = season_map.get(str(eid))
         if partid == 1533:
             return "Oakland" if season and season < 2020 else "Las Vegas"
         team_map = {
@@ -173,9 +172,9 @@ def load_and_pivot_acl(filepath, label, season_map):
             1529: "Jacksonville", 1535: "N.Y. Giants", 1527: "Indianapolis", 1522: "Cincinnati",
             1531: "Kansas City", 75380: "L.A. Chargers", 1543: "New Orleans", 1544: "Tampa Bay",
             1523: "N.Y. Jets", 1539: "Detroit", 1540: "Chicago", 1542: "Green Bay",
-            1550: "L.A. Rams", 1538: "Dallas", 1545: "Carolina",
             1534: "Denver", 1548: "Seattle", 1537: "Washington", 1549: "Arizona",
-            1524: "Miami", 1528: "Tennessee", 1519: "Pittsburgh", 1520: "Cleveland"
+            1524: "Miami", 1528: "Tennessee", 1519: "Pittsburgh", 1520: "Cleveland",
+            1550: "L.A. Rams", 1538: "Dallas", 1545: "Carolina"
         }
         return team_map.get(partid)
 
@@ -203,7 +202,7 @@ def combined_view(year, week):
     try:
         metadata = extract_metadata(year, week)
         eids = [m["eid"] for m in metadata if m["eid"] is not None]
-        season_map = {m["eid"]: m["season"] for m in metadata}
+        season_map = {str(m["eid"]): m["season"] for m in metadata}
 
         json_df = get_json_df(eids, label=f"{year}_week{week}", season_map=season_map)
 
