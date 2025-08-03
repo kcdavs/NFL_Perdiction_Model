@@ -76,41 +76,41 @@ def extract_metadata(year, week):
     res.raise_for_status()
     soup = BeautifulSoup(res.text, "html.parser")
 
-    metadata = []
+    rows = []
     for row in soup.select("tr.participantRow--z17q"):
-        # Raw and merge team logic as before
         tag = row.select_one("div.participantName-3CqB8")
         raw_team = tag.get_text(strip=True) if tag else ""
         merge_team = "Las Vegas" if "Raiders" in raw_team else raw_team
 
-        # EID
         eid = None
         a = row.select_one("a.link-1Vzcm")
         if a:
             eid = parse_qs(urlparse(a["href"]).query).get("eid", [None])[0]
 
-        # Date/time
         dt = row.select_one("div.time-3gPvd")
         date = dt.select_one("span").get_text(strip=True) if dt else ""
         time = dt.select_one("p").get_text(strip=True) if dt else ""
 
-        # **Fixed safe get_text** for score/rotation/outcome
         sc = row.select_one("span.score-3EWei")
         score = sc.get_text(strip=True) if sc else ""
-
         rt = row.select_one("td.rotation-3JAfZ")
         rotation = rt.get_text(strip=True) if rt else ""
-
         ot = row.select_one("span.eventStatusBox-19ZbY")
         outcome = ot.get_text(strip=True) if ot else ""
 
-        metadata.append({
-            "eid": eid, "season": year, "week": week,
-            "date": date, "time": time,
-            "team": raw_team, "merge_team": merge_team,
-            "rotation": rotation, "score": score, "outcome": outcome
+        rows.append({
+            "eid":        str(eid) if eid is not None else None,  # cast here
+            "season":     year,
+            "week":       week,
+            "date":       date,
+            "time":       time,
+            "team":       raw_team,
+            "merge_team": merge_team,
+            "rotation":   rotation,
+            "score":      score,
+            "outcome":    outcome
         })
-    return metadata
+    return rows
 
 def load_and_pivot_acl(fp):
     with open(fp) as f:
@@ -122,41 +122,47 @@ def load_and_pivot_acl(fp):
 
     adj = cl.pivot_table(index=["eid","partid"],columns="paid",values="adj").add_prefix("adj_")
     ap  = cl.pivot_table(index=["eid","partid"],columns="paid",values="ap").add_prefix("ap_")
-    df  = adj.join(ap).reset_index().merge(co, on=["eid","partid"],how="left").merge(ol,on=["eid","partid"],how="left")
+    df  = adj.join(ap).reset_index().merge(co, on=["eid","partid"], how="left").merge(ol, on=["eid","partid"], how="left")
 
+    # map and cast eid to str
     df["merge_team"] = df["partid"].map(TEAM_MAP)
+    df["eid"] = df["eid"].astype(str)  # <— ensure string type here
+
     return df
 
-def get_json_df(eids,label):
+def get_json_df(eids, label):
     q = (f"{{A_BL: bestLines(catid:338 eid:[{','.join(eids)}] mtid:401) "
          f"A_CL: currentLines(paid:{PAID_IDS} eid:[{','.join(eids)}] mtid:401) "
          f"A_OL: openingLines(paid:8 eid:[{','.join(eids)}] mtid:401) "
          f"A_CO: consensus(eid:[{','.join(eids)}] mtid:401) "
          f"{{eid mtid boid partid sbid paid lineid wag perc vol tvol sequence tim}} "
          f"maxSequences{{linesMaxSequence}}}}")
-    url = "https://ms.production-us-east-1.bookmakersreview.com/ms-odds-v2/odds-v2-service?query="+q
-    resp = requests.get(url, headers={'User-Agent':USER_AGENT}, timeout=10)
+    url = "https://ms.production-us-east-1.bookmakersreview.com/ms-odds-v2/odds-v2-service?query=" + q
+    resp = requests.get(url, headers={'User-Agent': USER_AGENT}, timeout=10)
     resp.raise_for_status()
-    with tempfile.NamedTemporaryFile(mode="w+",suffix=".json",delete=False) as tmp:
-        tmp.write(resp.text); fp=tmp.name
+    with tempfile.NamedTemporaryFile(mode="w+", suffix=".json", delete=False) as tmp:
+        tmp.write(resp.text)
+        fp = tmp.name
     return load_and_pivot_acl(fp)
 
 @app.route("/combined/<int:year>/<int:week>")
 def combined_view(year, week):
     try:
-        meta = extract_metadata(year,week)
-        df_meta = pd.DataFrame(meta)
-        eids    = [r["eid"] for r in meta if r["eid"]]
-        df_odds = get_json_df(eids,label=f"{year}_week{week}")
+        meta_rows = extract_metadata(year, week)
+        df_meta   = pd.DataFrame(meta_rows)
+        eids      = [r["eid"] for r in meta_rows if r["eid"]]
+        df_odds   = get_json_df(eids, label=f"{year}_week{week}")
 
-        merged = pd.merge(df_meta, df_odds,
-                          on=["eid","merge_team"], how="left").drop(columns=["merge_team"])
+        merged = (pd.merge(df_meta, df_odds,
+                           on=["eid","merge_team"], how="left")
+                  .drop(columns=["merge_team"]))
         csv = merged.to_csv(index=False)
-        push_csv_to_github(csv,year,week)
+        push_csv_to_github(csv, year, week)
         return Response(f"✅ {year} Week {week} uploaded", mimetype="text/plain")
-    except Exception as ex:
-        return Response(f"❌ Error: {ex}",status=500,mimetype="text/plain")
 
-if __name__=="__main__":
-    port = int(os.getenv("PORT",3000))
-    app.run(host="0.0.0.0",port=port)
+    except Exception as ex:
+        return Response(f"❌ Error: {ex}", status=500, mimetype="text/plain")
+
+if __name__ == "__main__":
+    port = int(os.getenv("PORT", 3000))
+    app.run(host="0.0.0.0", port=port)
