@@ -65,6 +65,7 @@ TEAM_MAP = {
 PAID_IDS   = [8,9,10,123,44,29,16,130,54,82,36,20,127,28,84]
 USER_AGENT = "Mozilla/5.0"
 
+
 def push_csv_to_github(csv_content: str, year: int, week: int) -> None:
     if not GITHUB_TOKEN:
         raise RuntimeError("GITHUB_TOKEN environment variable is missing")
@@ -74,7 +75,6 @@ def push_csv_to_github(csv_content: str, year: int, week: int) -> None:
         "Authorization": f"token {GITHUB_TOKEN}",
         "Accept": "application/vnd.github+json"
     }
-    # fetch existing sha
     resp = requests.get(api_url, headers=headers)
     sha  = resp.json().get("sha") if resp.status_code == 200 else None
 
@@ -88,6 +88,7 @@ def push_csv_to_github(csv_content: str, year: int, week: int) -> None:
 
     res = requests.put(api_url, headers=headers, json=payload)
     res.raise_for_status()
+
 
 def extract_metadata(year: int, week: int) -> list[dict]:
     seid = SEID_MAP.get(year)
@@ -110,7 +111,6 @@ def extract_metadata(year: int, week: int) -> list[dict]:
         time = date_tag.select_one("p").get_text(strip=True) if date_tag else ""
 
         raw_team = row.select_one("div.participantName-3CqB8").get_text(strip=True)
-        # unify Oakland → Las Vegas
         team = "Las Vegas" if "Oakland" in raw_team else raw_team
 
         score    = row.select_one("span.score-3EWei").get_text(strip=True) if row.select_one("span.score-3EWei") else ""
@@ -123,6 +123,7 @@ def extract_metadata(year: int, week: int) -> list[dict]:
         })
 
     return metadata
+
 
 def load_and_pivot_acl(filepath: str) -> pd.DataFrame:
     with open(filepath, "r") as f:
@@ -137,7 +138,9 @@ def load_and_pivot_acl(filepath: str) -> pd.DataFrame:
     ap  = cl.pivot_table(index=["eid","partid"], columns="paid", values="ap").add_prefix("ap_")
     df  = adj.join(ap).reset_index().merge(co, on=["eid","partid"], how="left").merge(ol, on=["eid","partid"], how="left")
     df["team"] = df["partid"].map(TEAM_MAP)
+    df["eid"] = df["eid"].astype(str)
     return df
+
 
 def get_json_df(eids: list[str]) -> pd.DataFrame:
     q = (
@@ -146,40 +149,4 @@ def get_json_df(eids: list[str]) -> pd.DataFrame:
         f"A_OL: openingLines(paid:8 eid:[{','.join(eids)}] mtid:401) "
         f"A_CO: consensus(eid:[{','.join(eids)}] mtid:401) "
         f"{{eid mtid boid partid sbid paid lineid wag perc vol tvol sequence tim}} "
-        f"maxSequences {{linesMaxSequence}}}}"
-    )
-    url  = "https://ms.production-us-east-1.bookmakersreview.com/ms-odds-v2/odds-v2-service?query=" + q
-    resp = requests.get(url, headers={'User-Agent': USER_AGENT}, timeout=10)
-    resp.raise_for_status()
-
-    with tempfile.NamedTemporaryFile(mode="w+", suffix=".json", delete=False) as tmp:
-        tmp.write(resp.text)
-        tmp_path = tmp.name
-
-    return load_and_pivot_acl(tmp_path)
-
-def run_scrape(year: int, week: int) -> str:
-    meta    = extract_metadata(year, week)
-    eids    = [m["eid"] for m in meta if m.get("eid")]
-    odds_df = get_json_df(eids)
-    meta_df = pd.DataFrame(meta)
-    merged  = pd.merge(meta_df, odds_df, on=["eid","team"], how="left")
-    csv     = merged.to_csv(index=False)
-    push_csv_to_github(csv, year, week)
-    return csv
-
-@app.route("/healthz")
-def healthz():
-    return jsonify(status="ok"), 200
-
-@app.route("/combined/<int:year>/<int:week>")
-def combined(year: int, week: int):
-    try:
-        run_scrape(year, week)
-        return Response(f"✅ {year} Week {week} processed", mimetype="text/plain"), 200
-    except Exception as e:
-        return Response(f"❌ Error: {e}", status=500, mimetype="text/plain")
-
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 3000))
-    app.run(host="0.0.0.0", port=port)
+        f"maxSequences {{linesMaxSequence}}}}
