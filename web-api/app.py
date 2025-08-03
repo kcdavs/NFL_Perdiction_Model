@@ -121,6 +121,8 @@ def combined_view(year,week):
     try:
         meta = extract_metadata(year,week)
         df_meta = pd.DataFrame(meta)
+        # dedupe eids to avoid duplicate query entries
+        eids = list(dict.fromkeys(eids))
         eids = [r['eid'] for r in meta if r['eid']]
         df_odds = get_json_df(eids)
         merged = pd.merge(df_meta, df_odds, on='eid', how='left')
