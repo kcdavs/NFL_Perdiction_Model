@@ -1,19 +1,17 @@
 # NFL-Gambling-Addiction-ml
 Use ml in conjunction with our existing ball knowledge to gain an edge on major sports gambling sites 
 
-get requests from bookmakers review
-https://ms.production-us-east-1.bookmakersreview.com/ms-odds-v2/odds-v2-service?query=%7B+
-+A_BL:+bestLines(catid:+338+eid:++[3452668,+3452669,+3452670,+3452671,+3452672,+3452673]+mtid:++401)
-+A_CL:+currentLines(paid:+[8,+9,+10,+123,+44,+29,+16,+130,+54,+8,+9,+82,+36,+20,+10,+127,+28,+84],+eid:+[3452668,+3452669,+3452670,+3452671,+3452672,+3452673],+mtid:+401)
-+A_OL:+openingLines(paid:+8,+eid:+[3452668,+3452669,+3452670,+3452671,+3452672,+3452673],+mtid:+401)
-+A_CO:+consensus(eid:+[3452668,+3452669,+3452670,+3452671,+3452672,+3452673],+mtid:+401)+%7B+eid+mtid+boid+partid+sbid+paid+lineid+wag+perc+vol+tvol+sequence+tim+%7D++maxSequences+%7B+linesMaxSequence+%7D+%7D
+📦 Components
+1. Webscraping
+Responsible for collecting sportsbook line data (e.g., spreads, odds) each week and saving it in the repository. This serves as one of the core data sources for the model.
 
+2. Ingestion & Transformation
+This module pulls from multiple data sources—including the scraped odds and league-wide stats—and combines them into a single, clean dataset with one row per game.
 
-https://ms.production-us-east-1.bookmakersreview.com/ms-odds-v2/odds-v2-service?query=%7B+
-+A_BL:+bestLines(catid:+338+eid:++[3452654,+3452656,+3452658,+3452660,+3452662,+3452663,+3452664,+3452665,+3452666,+3452667]+mtid:++401)
-+A_CL:+currentLines(paid:+[8,+9,+10,+123,+44,+29,+16,+130,+54,+8,+9,+82,+36,+20,+10,+127,+28,+84],+eid:+[3452654,+3452656,+3452658,+3452660,+3452662,+3452663,+3452664,+3452665,+3452666,+3452667],+mtid:+401)
-+A_OL:+openingLines(paid:+8,+eid:+[3452654,+3452656,+3452658,+3452660,+3452662,+3452663,+3452664,+3452665,+3452666,+3452667],+mtid:+401)
-+A_CO:+consensus(eid:+[3452654,+3452656,+3452658,+3452660,+3452662,+3452663,+3452664,+3452665,+3452666,+3452667],+mtid:+401)+%7B+eid+mtid+boid+partid+sbid+paid+lineid+wag+perc+vol+tvol+sequence+tim+%7D++maxSequences+%7B+linesMaxSequence+%7D+%7D
+The ingestion process is designed to be fully reproducible and can rebuild the entire dataset from scratch if needed.
 
+To optimize efficiency, checks are in place to prevent duplication. On routine runs, only new weekly data will be ingested and appended to the existing dataset.
 
-https://nfl-gambling-addiction-ml.onrender.com/tabulate-json?url1=%3Chttps%3A%2F%2Fms.production-us-east-1.bookmakersreview.com%2Fms-odds-v2%2Fodds-v2-service%3Fquery%3D%257B%2B%2BA_BL%3A%2BbestLines(catid%3A%2B338%2Beid%3A%2B%2B%5B3452654%2C%2B3452656%2C%2B3452658%2C%2B3452660%2C%2B3452662%2C%2B3452663%2C%2B3452664%2C%2B3452665%2C%2B3452666%2C%2B3452667%5D%2Bmtid%3A%2B%2B401)%2BA_CL%3A%2BcurrentLines(paid%3A%2B%5B8%2C%2B9%2C%2B10%2C%2B123%2C%2B44%2C%2B29%2C%2B16%2C%2B130%2C%2B54%2C%2B8%2C%2B9%2C%2B82%2C%2B36%2C%2B20%2C%2B10%2C%2B127%2C%2B28%2C%2B84%5D%2C%2Beid%3A%2B%5B3452654%2C%2B3452656%2C%2B3452658%2C%2B3452660%2C%2B3452662%2C%2B3452663%2C%2B3452664%2C%2B3452665%2C%2B3452666%2C%2B3452667%5D%2C%2Bmtid%3A%2B401)%2BA_OL%3A%2BopeningLines(paid%3A%2B8%2C%2Beid%3A%2B%5B3452654%2C%2B3452656%2C%2B3452658%2C%2B3452660%2C%2B3452662%2C%2B3452663%2C%2B3452664%2C%2B3452665%2C%2B3452666%2C%2B3452667%5D%2C%2Bmtid%3A%2B401)%2BA_CO%3A%2Bconsensus(eid%3A%2B%5B3452654%2C%2B3452656%2C%2B3452658%2C%2B3452660%2C%2B3452662%2C%2B3452663%2C%2B3452664%2C%2B3452665%2C%2B3452666%2C%2B3452667%5D%2C%2Bmtid%3A%2B401)%2B%257B%2Beid%2Bmtid%2Bboid%2Bpartid%2Bsbid%2Bpaid%2Blineid%2Bwag%2Bperc%2Bvol%2Btvol%2Bsequence%2Btim%2B%257D%2B%2BmaxSequences%2B%257B%2BlinesMaxSequence%2B%257D%2B%257D%3E&url2=%3Chttps%3A%2F%2Fms.production-us-east-1.bookmakersreview.com%2Fms-odds-v2%2Fodds-v2-service%3Fquery%3D%257B%2B%2BA_BL%3A%2BbestLines(catid%3A%2B338%2Beid%3A%2B%2B%5B3452668%2C%2B3452669%2C%2B3452670%2C%2B3452671%2C%2B3452672%2C%2B3452673%5D%2Bmtid%3A%2B%2B401)%2BA_CL%3A%2BcurrentLines(paid%3A%2B%5B8%2C%2B9%2C%2B10%2C%2B123%2C%2B44%2C%2B29%2C%2B16%2C%2B130%2C%2B54%2C%2B8%2C%2B9%2C%2B82%2C%2B36%2C%2B20%2C%2B10%2C%2B127%2C%2B28%2C%2B84%5D%2C%2Beid%3A%2B%5B3452668%2C%2B3452669%2C%2B3452670%2C%2B3452671%2C%2B3452672%2C%2B3452673%5D%2C%2Bmtid%3A%2B401)%2BA_OL%3A%2BopeningLines(paid%3A%2B8%2C%2Beid%3A%2B%5B3452668%2C%2B3452669%2C%2B3452670%2C%2B3452671%2C%2B3452672%2C%2B3452673%5D%2C%2Bmtid%3A%2B401)%2BA_CO%3A%2Bconsensus(eid%3A%2B%5B3452668%2C%2B3452669%2C%2B3452670%2C%2B3452671%2C%2B3452672%2C%2B3452673%5D%2C%2Bmtid%3A%2B401)%2B%257B%2Beid%2Bmtid%2Bboid%2Bpartid%2Bsbid%2Bpaid%2Blineid%2Bwag%2Bperc%2Bvol%2Btvol%2Bsequence%2Btim%2B%257D%2B%2BmaxSequences%2B%257B%2BlinesMaxSequence%2B%257D%2B%257D%3E
+3. Modeling
+The final dataset (one row per game) serves as input to a predictive model. This model analyzes trends, evaluates signals from sportsbook lines, and outputs insights or decisions that can inform weekly betting strategy or game evaluations.
+
