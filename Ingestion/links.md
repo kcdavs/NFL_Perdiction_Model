@@ -1,3 +1,24 @@
+WAGERS	OPENER	
+BetOnline
+Bovada
+BookMaker
+BetAnything
+Heritage Sports
+Everygame
+JustBet
+Bet105
+WagerWeb
+SportsBetting
+Bodog
+MyBookie
+William Hill
+Pinnacle
+Betcris
+BetPhoenix
+Skybook
+Nitrobetting
+
+
 https://odds.bookmakersreview.com/nfl/?egid=10&g=full-game&m=money-line&seid=4494
 
 https://ms.production-us-east-1.bookmakersreview.com/ms-odds-v2/odds-v2-service?query=%7B++A_BL:+bestLines(catid:+338+eid:++[3452668,+3452669,+3452670,+3452671,+3452672,+3452673]+mtid:++83)+A_CL:+currentLines(paid:+[8,+9,+10,+123,+44,+29,+16,+130,+54,+8,+9,+82,+36,+20,+10,+28,+84,+127],+eid:+[3452668,+3452669,+3452670,+3452671,+3452672,+3452673],+mtid:+83)+A_OL:+openingLines(paid:+8,+eid:+[3452668,+3452669,+3452670,+3452671,+3452672,+3452673],+mtid:+83)+A_CO:+consensus(eid:+[3452668,+3452669,+3452670,+3452671,+3452672,+3452673],+mtid:+83)+%7B+eid+mtid+boid+partid+sbid+paid+lineid+wag+perc+vol+tvol+sequence+tim+%7D++maxSequences+%7B+linesMaxSequence+%7D+%7D
