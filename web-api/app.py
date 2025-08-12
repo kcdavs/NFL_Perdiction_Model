@@ -11,38 +11,6 @@ import re
 
 app = Flask(__name__)
 
-def push_csv_to_github(csv_content, year, week, repo="kcdavs/NFL-Gambling-Addiction-ml", branch="main"):
-    token = os.getenv("GITHUB_TOKEN")
-    if not token:
-        raise Exception("Missing GITHUB_TOKEN environment variable")
-
-    filename = f"odds/{year}/week{str(week).zfill(2)}.csv"
-    api_url = f"https://api.github.com/repos/{repo}/contents/{filename}"
-
-    response = requests.get(api_url, headers={"Authorization": f"token {token}"})
-    sha = response.json().get("sha") if response.status_code == 200 else None
-
-    message = f"Add odds for {year} week {week}"
-    encoded_content = base64.b64encode(csv_content.encode("utf-8")).decode("utf-8")
-
-    payload = {
-        "message": message,
-        "content": encoded_content,
-        "branch": branch
-    }
-    if sha:
-        payload["sha"] = sha
-
-    headers = {
-        "Authorization": f"token {token}",
-        "Accept": "application/vnd.github+json"
-    }
-
-    res = requests.put(api_url, json=payload, headers=headers)
-    if res.status_code not in [200, 201]:
-        raise Exception(f"GitHub upload failed: {res.status_code} – {res.text}")
-    return res.json()
-
 SEID_MAP = {
     2018: 4494,
     2019: 5703,
@@ -117,13 +85,15 @@ def extract_metadata(year, week):
     return metadata
 
 def get_json_df(eids, label):
+    # Query BOTH markets at once: spreads (401) and moneylines (83)
+    eid_list = ",".join(eids)
     query = (
         f"{{"
-        f"A_BL: bestLines(catid: 338 eid: [{','.join(eids)}] mtid: 401) "
-        f"A_CL: currentLines(paid: [8,9,10,123,44,29,16,130,54,82,36,20,127,28,84], eid: [{','.join(eids)}], mtid: 401) "
-        f"A_OL: openingLines(paid: 8, eid: [{','.join(eids)}], mtid: 401) "
-        f"A_CO: consensus(eid: [{','.join(eids)}], mtid: 401) "
-        f"{{ eid mtid boid partid sbid paid lineid wag perc vol tvol sequence tim }} "
+        f"A_BL: bestLines(catid: 338 eid: [{eid_list}] mtid: [83,401]) "
+        f"A_CL: currentLines(paid: [8,9,10,16,20,28,29,36,44,54,82,123,127,130], eid: [{eid_list}], mtid: [83,401]) "
+        f"A_OL: openingLines(paid: 8, eid: [{eid_list}], mtid: [83,401]) "
+        f"A_CO: consensus(eid: [{eid_list}], mtid: [83,401]) "
+        f"{{ eid mtid boid partid sbid paid lineid wag perc vol tvol sequence tim adj ap }} "
         f"maxSequences {{ linesMaxSequence }} "
         f"}}"
     )
@@ -150,7 +120,6 @@ def load_and_pivot_acl(filepath, label):
         1529: "Jacksonville", 1535: "N.Y. Giants", 1527: "Indianapolis", 1522: "Cincinnati",
         1531: "Kansas City", 75380: "L.A. Chargers", 1543: "New Orleans", 1544: "Tampa Bay",
         1523: "N.Y. Jets", 1539: "Detroit", 1540: "Chicago", 1542: "Green Bay",
-        # We remove hardcoding 1533 here to avoid conflict, will assign partid later
         1550: "L.A. Rams", 1538: "Dallas", 1545: "Carolina",
         1534: "Denver", 1548: "Seattle", 1537: "Washington", 1549: "Arizona",
         1524: "Miami", 1528: "Tennessee", 1519: "Pittsburgh", 1520: "Cleveland"
@@ -160,31 +129,57 @@ def load_and_pivot_acl(filepath, label):
         data = json.load(f)
 
     cl = pd.DataFrame(data["data"].get("A_CL", []))
-    if cl.empty or not set(["eid", "partid", "paid", "adj", "ap"]).issubset(cl.columns):
-        raise Exception("A_CL is missing or incomplete in JSON response")
-    cl = cl[["eid", "partid", "paid", "adj", "ap"]]
+    if cl.empty or not set(["eid", "partid", "paid", "ap", "mtid"]).issubset(cl.columns):
+        raise Exception("A_CL is missing required columns (need eid, partid, paid, ap, mtid)")
 
-    co = pd.DataFrame(data["data"].get("A_CO", []))[["eid", "partid", "perc"]].drop_duplicates()
-    ol = pd.DataFrame(data["data"].get("A_OL", []))[["eid", "partid", "adj", "ap"]]
-    ol.columns = ["eid", "partid", "opening_adj", "opening_ap"]
+    # --- Split markets ---
+    SPREAD_MID = 401
+    MONEYLINE_MID = 83
 
-    cl_adj = cl.pivot_table(index=["eid", "partid"], columns="paid", values="adj").add_prefix("adj_")
-    cl_ap = cl.pivot_table(index=["eid", "partid"], columns="paid", values="ap").add_prefix("ap_")
-    pivot_df = cl_adj.join(cl_ap).reset_index()
+    # Spreads: keep adj & ap
+    cl_spread = cl[cl["mtid"] == SPREAD_MID].copy()
+    spread_adj = None
+    if "adj" in cl_spread.columns and not cl_spread.empty:
+        spread_adj = cl_spread.pivot_table(index=["eid", "partid"], columns="paid", values="adj").add_prefix("adj_")
+    spread_ap = cl_spread.pivot_table(index=["eid", "partid"], columns="paid", values="ap").add_prefix("ap_") if not cl_spread.empty else None
 
-    df = pivot_df.merge(co, on=["eid", "partid"], how="left").merge(ol, on=["eid", "partid"], how="left")
-    df["team"] = df["partid"].map(team_map)
-    df["eid"] = df["eid"].astype(str)
-    return df
+    # Moneylines: ap only → ml_8, ml_9, ...
+    cl_ml = cl[cl["mtid"] == MONEYLINE_MID].copy()
+    ml_ap = cl_ml.pivot_table(index=["eid", "partid"], columns="paid", values="ap").add_prefix("ml_") if not cl_ml.empty else None
+
+    # Join pivots (outer join to be safe)
+    pieces = [df for df in [spread_adj, spread_ap, ml_ap] if df is not None]
+    if not pieces:
+        pivot_df = pd.DataFrame(columns=["eid", "partid"])
+    else:
+        pivot_df = pieces[0]
+        for p in pieces[1:]:
+            pivot_df = pivot_df.join(p, how="outer")
+    pivot_df = pivot_df.reset_index()
+
+    # Consensus — keep spread consensus only (avoid mixing ml consensus unless you want ml_perc too)
+    co = pd.DataFrame(data["data"].get("A_CO", []))
+    if not co.empty and set(["eid", "partid", "perc", "mtid"]).issubset(co.columns):
+        co_spread = co[co["mtid"] == SPREAD_MID][["eid", "partid", "perc"]].drop_duplicates()
+        pivot_df = pivot_df.merge(co_spread.rename(columns={"perc": "perc"}), on=["eid", "partid"], how="left")
+
+    # Opening — keep spread opening_adj/opening_ap only to avoid duplicate rows from ML openings
+    ol = pd.DataFrame(data["data"].get("A_OL", []))
+    if not ol.empty and set(["eid", "partid", "adj", "ap", "mtid"]).issubset(ol.columns):
+        ol_spread = ol[ol["mtid"] == SPREAD_MID][["eid", "partid", "adj", "ap"]].copy()
+        ol_spread.columns = ["eid", "partid", "opening_adj", "opening_ap"]
+        pivot_df = pivot_df.merge(ol_spread, on=["eid", "partid"], how="left")
+
+    pivot_df["team"] = pivot_df["partid"].map(team_map)
+    pivot_df["eid"] = pivot_df["eid"].astype(str)
+    return pivot_df
 
 @app.route("/combined/<int:year>/<int:week>")
 def combined_view(year, week):
     import traceback
     try:
         metadata = extract_metadata(year, week)
-        print("Metadata sample:", metadata[:3])
         meta_df = pd.DataFrame(metadata)
-        print("Columns in meta_df:", meta_df.columns)
 
         if "team" not in meta_df.columns:
             return Response("❌ Error: 'team' column missing in metadata", status=500, mimetype="text/plain")
@@ -215,17 +210,16 @@ def combined_view(year, week):
         json_df["partid"] = json_df["partid"].astype(int)
 
         merged = pd.merge(meta_df, json_df, on=["eid", "partid"], how="left")
-        
+
         # Fix team column after merge (handle suffixes)
         if "team_x" in merged.columns and "team_y" in merged.columns:
             merged = merged.rename(columns={"team_x": "team"}).drop(columns=["team_y"])
         elif "team" not in merged.columns:
             merged["team"] = meta_df["team"]
-        
-        csv = merged.to_csv(index=False)
 
-        push_csv_to_github(csv, year, week)
-        return Response(f"✅ {year} Week {week} uploaded to GitHub", mimetype="text/plain")
+        # Return CSV directly in the browser (no GitHub upload)
+        csv = merged.to_csv(index=False)
+        return Response(csv, mimetype="text/csv")
 
     except Exception as e:
         tb = traceback.format_exc()
