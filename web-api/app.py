@@ -85,14 +85,22 @@ def extract_metadata(year, week):
     return metadata
 
 def get_json_df(eids, label):
-    # Query BOTH markets at once: spreads (401) and moneylines (83)
+    # 1) Dedupe EIDs (you currently have duplicates from home/away rows)
+    eids = sorted(set([e for e in eids if e]))
     eid_list = ",".join(eids)
+
+    # 2) Use aliases per market instead of mtid arrays (avoids 400s)
     query = (
         f"{{"
-        f"A_BL: bestLines(catid: 338 eid: [{eid_list}] mtid: [83,401]) "
-        f"A_CL: currentLines(paid: [8,9,10,16,20,28,29,36,44,54,82,123,127,130], eid: [{eid_list}], mtid: [83,401]) "
-        f"A_OL: openingLines(paid: 8, eid: [{eid_list}], mtid: [83,401]) "
-        f"A_CO: consensus(eid: [{eid_list}], mtid: [83,401]) "
+        # Spreads (401)
+        f"A_CL_401: currentLines(paid: [8,9,10,123,44,29,16,130,54,82,36,20,127,28,84], eid: [{eid_list}], mtid: 401) "
+        f"A_OL_401: openingLines(paid: 8, eid: [{eid_list}], mtid: 401) "
+        f"A_CO_401: consensus(eid: [{eid_list}], mtid: 401) "
+        # Moneylines (83)
+        f"A_CL_83: currentLines(paid: [8,9,10,123,44,29,16,130,54,82,36,20,127,28,84], eid: [{eid_list}], mtid: 83) "
+        f"A_OL_83: openingLines(paid: 8, eid: [{eid_list}], mtid: 83) "
+        f"A_CO_83: consensus(eid: [{eid_list}], mtid: 83) "
+        # Selection set
         f"{{ eid mtid boid partid sbid paid lineid wag perc vol tvol sequence tim adj ap }} "
         f"maxSequences {{ linesMaxSequence }} "
         f"}}"
@@ -128,26 +136,47 @@ def load_and_pivot_acl(filepath, label):
     with open(filepath, "r") as f:
         data = json.load(f)
 
-    cl = pd.DataFrame(data["data"].get("A_CL", []))
-    if cl.empty or not set(["eid", "partid", "paid", "ap", "mtid"]).issubset(cl.columns):
-        raise Exception("A_CL is missing required columns (need eid, partid, paid, ap, mtid)")
+    # Pull alias arrays (some may be missing for older data)
+    def _df(key):
+        arr = data["data"].get(key, [])
+        return pd.DataFrame(arr) if arr else pd.DataFrame()
 
-    # --- Split markets ---
-    SPREAD_MID = 401
-    MONEYLINE_MID = 83
+    # Current lines for each market
+    cl_401 = _df("A_CL_401")
+    cl_83  = _df("A_CL_83")
+    if cl_401.empty and cl_83.empty:
+        raise Exception("A_CL_401 and A_CL_83 are both empty")
 
-    # Spreads: keep adj & ap
-    cl_spread = cl[cl["mtid"] == SPREAD_MID].copy()
-    spread_adj = None
-    if "adj" in cl_spread.columns and not cl_spread.empty:
-        spread_adj = cl_spread.pivot_table(index=["eid", "partid"], columns="paid", values="adj").add_prefix("adj_")
-    spread_ap = cl_spread.pivot_table(index=["eid", "partid"], columns="paid", values="ap").add_prefix("ap_") if not cl_spread.empty else None
+    # Tag the market (mtid may already be there, but ensure it)
+    if not cl_401.empty:
+        cl_401["mtid"] = 401
+    if not cl_83.empty:
+        cl_83["mtid"] = 83
+
+    # --- Build pivots ---
+    # Spreads: both adj_* and ap_* (same as your old behavior)
+    spread_adj = spread_ap = None
+    if not cl_401.empty:
+        need_cols = {"eid", "partid", "paid"}
+        if not need_cols.issubset(set(cl_401.columns)):
+            raise Exception("A_CL_401 missing required columns")
+        # adj
+        if "adj" in cl_401.columns and not cl_401["adj"].dropna().empty:
+            spread_adj = cl_401.pivot_table(index=["eid", "partid"], columns="paid", values="adj").add_prefix("adj_")
+        # ap
+        if "ap" in cl_401.columns and not cl_401["ap"].dropna().empty:
+            spread_ap = cl_401.pivot_table(index=["eid", "partid"], columns="paid", values="ap").add_prefix("ap_")
 
     # Moneylines: ap only → ml_8, ml_9, ...
-    cl_ml = cl[cl["mtid"] == MONEYLINE_MID].copy()
-    ml_ap = cl_ml.pivot_table(index=["eid", "partid"], columns="paid", values="ap").add_prefix("ml_") if not cl_ml.empty else None
+    ml_ap = None
+    if not cl_83.empty:
+        need_cols = {"eid", "partid", "paid", "ap"}
+        if not need_cols.issubset(set(cl_83.columns)):
+            raise Exception("A_CL_83 missing required columns")
+        if not cl_83["ap"].dropna().empty:
+            ml_ap = cl_83.pivot_table(index=["eid", "partid"], columns="paid", values="ap").add_prefix("ml_")
 
-    # Join pivots (outer join to be safe)
+    # Stitch pivots
     pieces = [df for df in [spread_adj, spread_ap, ml_ap] if df is not None]
     if not pieces:
         pivot_df = pd.DataFrame(columns=["eid", "partid"])
@@ -157,19 +186,22 @@ def load_and_pivot_acl(filepath, label):
             pivot_df = pivot_df.join(p, how="outer")
     pivot_df = pivot_df.reset_index()
 
-    # Consensus — keep spread consensus only (avoid mixing ml consensus unless you want ml_perc too)
-    co = pd.DataFrame(data["data"].get("A_CO", []))
-    if not co.empty and set(["eid", "partid", "perc", "mtid"]).issubset(co.columns):
-        co_spread = co[co["mtid"] == SPREAD_MID][["eid", "partid", "perc"]].drop_duplicates()
-        pivot_df = pivot_df.merge(co_spread.rename(columns={"perc": "perc"}), on=["eid", "partid"], how="left")
+    # Consensus — (optional) include spread consensus as 'perc'
+    co_401 = _df("A_CO_401")
+    if not co_401.empty and {"eid","partid","perc"}.issubset(co_401.columns):
+        pivot_df = pivot_df.merge(
+            co_401[["eid","partid","perc"]].drop_duplicates(),
+            on=["eid","partid"], how="left"
+        )
 
-    # Opening — keep spread opening_adj/opening_ap only to avoid duplicate rows from ML openings
-    ol = pd.DataFrame(data["data"].get("A_OL", []))
-    if not ol.empty and set(["eid", "partid", "adj", "ap", "mtid"]).issubset(ol.columns):
-        ol_spread = ol[ol["mtid"] == SPREAD_MID][["eid", "partid", "adj", "ap"]].copy()
-        ol_spread.columns = ["eid", "partid", "opening_adj", "opening_ap"]
-        pivot_df = pivot_df.merge(ol_spread, on=["eid", "partid"], how="left")
+    # Opening — (optional) keep spread opening_adj/opening_ap like before
+    ol_401 = _df("A_OL_401")
+    if not ol_401.empty and {"eid","partid","adj","ap"}.issubset(ol_401.columns):
+        ol_spread = ol_401[["eid","partid","adj","ap"]].copy()
+        ol_spread.columns = ["eid","partid","opening_adj","opening_ap"]
+        pivot_df = pivot_df.merge(ol_spread, on=["eid","partid"], how="left")
 
+    # Final touches
     pivot_df["team"] = pivot_df["partid"].map(team_map)
     pivot_df["eid"] = pivot_df["eid"].astype(str)
     return pivot_df
