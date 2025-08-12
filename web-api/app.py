@@ -6,7 +6,6 @@ from urllib.parse import urlparse, parse_qs
 import json
 import tempfile
 import os
-import base64
 import re
 
 app = Flask(__name__)
@@ -35,6 +34,7 @@ for year in range(2021, 2026):
     for i, egid in enumerate([28, 29, 30, 31], start=19):
         EGID_MAP[(year, i)] = egid
 
+
 def extract_metadata(year, week):
     seid = SEID_MAP.get(year)
     egid = EGID_MAP.get((year, week))
@@ -42,14 +42,15 @@ def extract_metadata(year, week):
         raise ValueError(f"Unknown SEID or EGID for {year} Week {week}")
 
     url = f"https://odds.bookmakersreview.com/nfl/?egid={egid}&seid={seid}"
-    res = requests.get(url)
+    res = requests.get(url, timeout=15)
+    res.raise_for_status()
     soup = BeautifulSoup(res.text, "html.parser")
 
     metadata = []
     for row in soup.find_all("tr", class_="participantRow--z17q"):
         eid = None
         eid_tag = row.find("a", class_="link-1Vzcm")
-        if eid_tag:
+        if eid_tag and eid_tag.has_attr("href"):
             parsed = urlparse(eid_tag["href"])
             qs = parse_qs(parsed.query)
             eid = qs.get("eid", [None])[0]
@@ -81,26 +82,27 @@ def extract_metadata(year, week):
             "score": score,
             "outcome": outcome
         })
-
     return metadata
 
+
 def get_json_df(eids, label):
-    # 1) Dedupe EIDs (you currently have duplicates from home/away rows)
-    eids = sorted(set([e for e in eids if e]))
+    # Deduplicate & sanity-filter EIDs (preserve order)
+    eids = [e for e in eids if e]
+    eids = list(dict.fromkeys([str(e) for e in eids if str(e).isdigit()]))
     eid_list = ",".join(eids)
 
-    # 2) Use aliases per market instead of mtid arrays (avoids 400s)
+    # Query spreads (401) + moneylines (83) in one request using aliases
     query = (
         f"{{"
-        # Spreads (401)
+        # Spreads
         f"A_CL_401: currentLines(paid: [8,9,10,123,44,29,16,130,54,82,36,20,127,28,84], eid: [{eid_list}], mtid: 401) "
         f"A_OL_401: openingLines(paid: 8, eid: [{eid_list}], mtid: 401) "
         f"A_CO_401: consensus(eid: [{eid_list}], mtid: 401) "
-        # Moneylines (83)
-        f"A_CL_83: currentLines(paid: [8,9,10,123,44,29,16,130,54,82,36,20,127,28,84], eid: [{eid_list}], mtid: 83) "
-        f"A_OL_83: openingLines(paid: 8, eid: [{eid_list}], mtid: 83) "
-        f"A_CO_83: consensus(eid: [{eid_list}], mtid: 83) "
-        # Selection set
+        # Moneylines
+        f"A_CL_83:  currentLines(paid: [8,9,10,123,44,29,16,130,54,82,36,20,127,28,84], eid: [{eid_list}], mtid: 83) "
+        f"A_OL_83:  openingLines(paid: 8, eid: [{eid_list}], mtid: 83) "
+        f"A_CO_83:  consensus(eid: [{eid_list}], mtid: 83) "
+        # Selection set (applies to the fields above on this API)
         f"{{ eid mtid boid partid sbid paid lineid wag perc vol tvol sequence tim adj ap }} "
         f"maxSequences {{ linesMaxSequence }} "
         f"}}"
@@ -112,7 +114,7 @@ def get_json_df(eids, label):
         "Referer": "https://odds.bookmakersreview.com/nfl/",
         "X-Requested-With": "XMLHttpRequest",
     }
-    resp = requests.get(url, headers=headers, timeout=10)
+    resp = requests.get(url, headers=headers, timeout=15)
     resp.raise_for_status()
 
     with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as tmp:
@@ -120,6 +122,7 @@ def get_json_df(eids, label):
         tmp_path = tmp.name
 
     return load_and_pivot_acl(tmp_path, label)
+
 
 def load_and_pivot_acl(filepath, label):
     team_map = {
@@ -136,75 +139,58 @@ def load_and_pivot_acl(filepath, label):
     with open(filepath, "r") as f:
         data = json.load(f)
 
-    # Pull alias arrays (some may be missing for older data)
     def _df(key):
-        arr = data["data"].get(key, [])
+        arr = data.get("data", {}).get(key, [])
         return pd.DataFrame(arr) if arr else pd.DataFrame()
 
-    # Current lines for each market
-    cl_401 = _df("A_CL_401")
-    cl_83  = _df("A_CL_83")
+    # Current lines by market
+    cl_401 = _df("A_CL_401")  # spreads
+    cl_83  = _df("A_CL_83")   # moneylines
+
     if cl_401.empty and cl_83.empty:
-        raise Exception("A_CL_401 and A_CL_83 are both empty")
+        # Nothing to pivot -> return minimal frame
+        return pd.DataFrame(columns=["eid", "partid", "team"])
 
-    # Tag the market (mtid may already be there, but ensure it)
-    if not cl_401.empty:
-        cl_401["mtid"] = 401
-    if not cl_83.empty:
-        cl_83["mtid"] = 83
-
-    # --- Build pivots ---
-    # Spreads: both adj_* and ap_* (same as your old behavior)
+    # --- Spreads (401): adj_* and ap_* ---
     spread_adj = spread_ap = None
     if not cl_401.empty:
-        need_cols = {"eid", "partid", "paid"}
-        if not need_cols.issubset(set(cl_401.columns)):
-            raise Exception("A_CL_401 missing required columns")
-        # adj
-        if "adj" in cl_401.columns and not cl_401["adj"].dropna().empty:
+        if "adj" in cl_401.columns and cl_401["adj"].notna().any():
             spread_adj = cl_401.pivot_table(index=["eid", "partid"], columns="paid", values="adj").add_prefix("adj_")
-        # ap
-        if "ap" in cl_401.columns and not cl_401["ap"].dropna().empty:
+        if "ap" in cl_401.columns and cl_401["ap"].notna().any():
             spread_ap = cl_401.pivot_table(index=["eid", "partid"], columns="paid", values="ap").add_prefix("ap_")
 
-    # Moneylines: ap only → ml_8, ml_9, ...
+    # --- Moneylines (83): ap only -> ml_8, ml_9, ...
     ml_ap = None
-    if not cl_83.empty:
-        need_cols = {"eid", "partid", "paid", "ap"}
-        if not need_cols.issubset(set(cl_83.columns)):
-            raise Exception("A_CL_83 missing required columns")
-        if not cl_83["ap"].dropna().empty:
-            ml_ap = cl_83.pivot_table(index=["eid", "partid"], columns="paid", values="ap").add_prefix("ml_")
+    if not cl_83.empty and "ap" in cl_83.columns and cl_83["ap"].notna().any():
+        ml_ap = cl_83.pivot_table(index=["eid", "partid"], columns="paid", values="ap").add_prefix("ml_")
 
-    # Stitch pivots
-    pieces = [df for df in [spread_adj, spread_ap, ml_ap] if df is not None]
-    if not pieces:
-        pivot_df = pd.DataFrame(columns=["eid", "partid"])
-    else:
-        pivot_df = pieces[0]
-        for p in pieces[1:]:
-            pivot_df = pivot_df.join(p, how="outer")
+    # Join pivots (outer join to tolerate missing books/markets)
+    pieces = [p for p in [spread_adj, spread_ap, ml_ap] if p is not None]
+    pivot_df = pieces[0]
+    for p in pieces[1:]:
+        pivot_df = pivot_df.join(p, how="outer")
     pivot_df = pivot_df.reset_index()
 
-    # Consensus — (optional) include spread consensus as 'perc'
+    # Optional: spread consensus (as 'perc', unchanged)
     co_401 = _df("A_CO_401")
-    if not co_401.empty and {"eid","partid","perc"}.issubset(co_401.columns):
+    if not co_401.empty and {"eid", "partid", "perc"}.issubset(co_401.columns):
         pivot_df = pivot_df.merge(
-            co_401[["eid","partid","perc"]].drop_duplicates(),
-            on=["eid","partid"], how="left"
+            co_401[["eid", "partid", "perc"]].drop_duplicates(),
+            on=["eid", "partid"], how="left"
         )
 
-    # Opening — (optional) keep spread opening_adj/opening_ap like before
+    # Optional: spread opening (as opening_adj/opening_ap, unchanged)
     ol_401 = _df("A_OL_401")
-    if not ol_401.empty and {"eid","partid","adj","ap"}.issubset(ol_401.columns):
-        ol_spread = ol_401[["eid","partid","adj","ap"]].copy()
-        ol_spread.columns = ["eid","partid","opening_adj","opening_ap"]
-        pivot_df = pivot_df.merge(ol_spread, on=["eid","partid"], how="left")
+    if not ol_401.empty and {"eid", "partid", "adj", "ap"}.issubset(ol_401.columns):
+        ol_spread = ol_401[["eid", "partid", "adj", "ap"]].copy()
+        ol_spread.columns = ["eid", "partid", "opening_adj", "opening_ap"]
+        pivot_df = pivot_df.merge(ol_spread, on=["eid", "partid"], how="left")
 
     # Final touches
     pivot_df["team"] = pivot_df["partid"].map(team_map)
     pivot_df["eid"] = pivot_df["eid"].astype(str)
     return pivot_df
+
 
 @app.route("/combined/<int:year>/<int:week>")
 def combined_view(year, week):
@@ -216,9 +202,7 @@ def combined_view(year, week):
         if "team" not in meta_df.columns:
             return Response("❌ Error: 'team' column missing in metadata", status=500, mimetype="text/plain")
 
-        eids = [m["eid"] for m in metadata if m["eid"] is not None]
-
-        # Create partid map (including Oakland/Las Vegas special case)
+        # partid reverse map (handles OAK/LV)
         reverse_team_map = {
             "CAROLINA": 1545, "DALLAS": 1538, "L.A. RAMS": 1550, "PITTSBURGH": 1519,
             "CLEVELAND": 1520, "BALTIMORE": 1521, "CINCINNATI": 1522, "N.Y. JETS": 1523,
@@ -232,13 +216,19 @@ def combined_view(year, week):
         }
 
         def assign_partid(row):
-            team_upper = row["team"].strip().upper()
+            team_upper = (row.get("team") or "").strip().upper()
             return reverse_team_map.get(team_upper, None)
 
         meta_df["partid"] = meta_df.apply(assign_partid, axis=1)
 
+        # Build clean, de-duplicated EID list
+        eids = [m["eid"] for m in metadata if m.get("eid")]
+        eids = list(dict.fromkeys([e for e in eids if str(e).isdigit()]))
+
         json_df = get_json_df(eids, label=f"{year}_week{week}")
         json_df["eid"] = json_df["eid"].astype(str)
+        # If partid is missing in some rows (very rare), drop them before merge to avoid issues
+        json_df = json_df[pd.to_numeric(json_df["partid"], errors="coerce").notna()].copy()
         json_df["partid"] = json_df["partid"].astype(int)
 
         merged = pd.merge(meta_df, json_df, on=["eid", "partid"], how="left")
@@ -249,7 +239,7 @@ def combined_view(year, week):
         elif "team" not in merged.columns:
             merged["team"] = meta_df["team"]
 
-        # Return CSV directly in the browser (no GitHub upload)
+        # Return CSV directly to the browser
         csv = merged.to_csv(index=False)
         return Response(csv, mimetype="text/csv")
 
