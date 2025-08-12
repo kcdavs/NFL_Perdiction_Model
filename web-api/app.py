@@ -101,7 +101,6 @@ def get_json_df(eids, label):
     eids = _dedupe_eids_preserve_order(eids)
     eid_list = ", ".join(eids)
     paid_list = ", ".join(str(p) for p in PAID)
-    # Include mtid in fields so we can split spreads vs moneylines
     fields = "eid mtid boid partid sbid paid lineid wag perc vol tvol sequence tim adj ap"
 
     query = (
@@ -115,18 +114,22 @@ def get_json_df(eids, label):
         "}"
     )
 
-    # Encode query in the URL (matches the style you showed/pasteable)
-    url = f"{BASE}?query={quote_plus(query)}"
+    # >>> no encoding — log raw query + raw URL for inspection
+    url = f"{BASE}?query={query}"
+    print("\n--- DEBUG: RAW GRAPHQL QUERY ---\n", query)
+    print("\n--- DEBUG: RAW URL (unencoded) ---\n", url, "\n")
+
     headers = {
         "User-Agent": "Mozilla/5.0",
         "Accept": "application/json",
         "Referer": "https://odds.bookmakersreview.com/nfl/",
         "X-Requested-With": "XMLHttpRequest",
     }
+
+    # You can call using the raw URL. If the server rejects spaces, switch to params={"query": query}.
     resp = requests.get(url, headers=headers, timeout=20)
     resp.raise_for_status()
 
-    # Save then parse (keeps the rest of your flow)
     with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as tmp:
         tmp.write(resp.text)
         tmp_path = tmp.name
