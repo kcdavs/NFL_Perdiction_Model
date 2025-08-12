@@ -95,11 +95,11 @@ def get_json_df(eids, label):
     query = (
         f"{{"
         # Spreads
-        f"A_CL_401: currentLines(paid: [8,9,10,123,44,29,16,130,54,82,36,20,127,28,84], eid: [{eid_list}], mtid: 401) "
+        f"A_CL_401: currentLines(paid: [8,9,10,16,20,28,29,36,44,54,82,123,127,130], eid: [{eid_list}], mtid: 401) "
         f"A_OL_401: openingLines(paid: 8, eid: [{eid_list}], mtid: 401) "
         f"A_CO_401: consensus(eid: [{eid_list}], mtid: 401) "
         # Moneylines
-        f"A_CL_83:  currentLines(paid: [8,9,10,123,44,29,16,130,54,82,36,20,127,28,84], eid: [{eid_list}], mtid: 83) "
+        f"A_CL_83:  currentLines(paid: [8,9,10,16,20,28,29,36,44,54,82,123,127,130], eid: [{eid_list}], mtid: 83) "
         f"A_OL_83:  openingLines(paid: 8, eid: [{eid_list}], mtid: 83) "
         f"A_CO_83:  consensus(eid: [{eid_list}], mtid: 83) "
         # Selection set (applies to the fields above on this API)
