@@ -8,6 +8,7 @@ import tempfile
 import os
 import base64
 import re
+from github import Github, UnknownObjectException
 
 app = Flask(__name__)
 
