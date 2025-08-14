@@ -5,3 +5,4 @@ beautifulsoup4
 gunicorn
 pyspark
 playwright
+PyGithub
