@@ -205,31 +205,44 @@ def parse_consensus(data: dict) -> pd.DataFrame:
 # STEP 4: MERGE
 # ================================
 
-def merge_all(ol_df: pd.DataFrame, cl_df: pd.DataFrame, co_df: pd.DataFrame) -> pd.DataFrame:
+def merge_all(meta_df: pd.DataFrame, ol_df: pd.DataFrame, cl_df: pd.DataFrame, co_df: pd.DataFrame) -> pd.DataFrame:
     """
-    Merge OL, CL, and CO DataFrames and order columns so each paid group is together:
-    For each paid number: ml, spr, spr_odds.
+    Merge metadata with OL, CL, and CO DataFrames.
+    Join on eid and partid, drop partid in final result.
     """
-    # Merge all three
+    # Ensure eid is string everywhere
+    meta_df["eid"] = meta_df["eid"].astype(str)
+    ol_df["eid"] = ol_df["eid"].astype(str)
+    cl_df["eid"] = cl_df["eid"].astype(str)
+    co_df["eid"] = co_df["eid"].astype(str)
+
+    # Merge odds data first
     merged = co_df.merge(ol_df, on=['eid', 'partid'], how='outer')
     merged = merged.merge(cl_df, on=['eid', 'partid'], how='outer')
 
-    # Start with IDs and consensus
-    ordered_cols = ['eid', 'partid', 'ml_perc', 'ml_wag', 'spr_perc', 'spr_wag',
-                    'op_ml', 'op_spr', 'op_spr_odds']
+    # Merge with metadata
+    merged = meta_df.merge(merged, on=['eid', 'partid'], how='left')
 
-    # Find all the "paid" numbers from CL columns
+    # Drop partid from final DataFrame
+    if 'partid' in merged.columns:
+        merged = merged.drop(columns=['partid'])
+
+    # Build ordered columns: metadata first
+    ordered_cols = [c for c in meta_df.columns if c != 'partid']
+    ordered_cols += ['ml_perc', 'ml_wag', 'spr_perc', 'spr_wag', 'op_ml', 'op_spr', 'op_spr_odds']
+
+    # Add all paid number columns
     paid_numbers = sorted(set(int(re.match(r"(\d+)_", c).group(1))
                               for c in merged.columns if re.match(r"\d+_", c)))
-
-    # For each paid number, append its ml, spr, spr_odds columns in order
     for paid in paid_numbers:
         for suffix in ['ml', 'spr', 'spr_odds']:
             col_name = f"{paid}_{suffix}"
             if col_name in merged.columns:
                 ordered_cols.append(col_name)
 
-    # Reorder merged DataFrame
+    # Keep only columns that exist
+    ordered_cols = [c for c in ordered_cols if c in merged.columns]
+
     return merged[ordered_cols]
 
 # ================================
@@ -253,7 +266,8 @@ def get_weekly_odds(year: int, week: int) -> pd.DataFrame:
     cl_df = parse_current_lines(odds_json)
     co_df = parse_consensus(odds_json)
 
-    final_df = merge_all(ol_df, cl_df, co_df)
+    final_df = merge_all(meta_df, ol_df, cl_df, co_df)
+
     return final_df
 
 @app.route("/combined/<int:year>/<int:week>")
