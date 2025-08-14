@@ -10,6 +10,18 @@ import base64
 import re
 
 app = Flask(__name__)
+from flask import Flask, Response, request
+import requests
+from bs4 import BeautifulSoup
+import pandas as pd
+from urllib.parse import urlparse, parse_qs
+import json
+import tempfile
+import os
+import base64
+import re
+
+app = Flask(__name__)
 # ================================
 # CONFIGURATION: SEID & EGID MAPPING
 # ================================
@@ -120,9 +132,9 @@ def fetch_odds_json(eids: list) -> dict:
     """
     query = (
         f"{{"
-        f"A_CL: currentLines(paid: [8,9,10,123,44,29,16,130,54,82,36,20,127,28,84], eid: [{','.join(eids)}], mtid: [83,401]) "
-        f"A_OL: openingLines(paid: 8, eid: [{','.join(eids)}], mtid: [83,401]) "
-        f"A_CO: consensus(eid: [{','.join(eids)}], mtid: [83,401]) "
+        f"A_CL: currentLines(paid: [8,9,10,123,44,29,16,130,54,82,36,20,127,28,84], eid: [{','.join(eids)}], mtid: [83,401,402]) "
+        f"A_OL: openingLines(paid: 8, eid: [{','.join(eids)}], mtid: [83,401,402]) "
+        f"A_CO: consensus(eid: [{','.join(eids)}], mtid: [83,401,402]) "
         f"{{ eid mtid boid partid sbid paid lineid wag perc vol tvol sequence tim }} "
         f"}}"
     )
@@ -145,105 +157,149 @@ def fetch_odds_json(eids: list) -> dict:
 # ================================
 
 def parse_opening_lines(data: dict) -> pd.DataFrame:
-    """Parse A_OL section into op_ml, op_spr, op_spr_odds."""
     ol_df = pd.DataFrame(data["data"].get("A_OL", []))
     if ol_df.empty:
-        return pd.DataFrame(columns=["eid", "partid", "op_ml_odds", "op_spr", "op_spr_odds"])
+        return pd.DataFrame(columns=["eid", "partid", "op_ml", "op_spr", "op_spr_odds", "op_ou", "op_ou_odds"])
 
-    ol_df['op_ml'] = ol_df.apply(lambda r: r['ap'] if r['mtid'] == 83 else None, axis=1)
-    ol_df['op_spr'] = ol_df.apply(lambda r: r['adj'] if r['mtid'] == 401 else None, axis=1)
-    ol_df['op_spr_odds'] = ol_df.apply(lambda r: r['ap'] if r['mtid'] == 401 else None, axis=1)
+    ol_df['op_ml'] = ol_df.apply(lambda r: r['ap']  if r['mtid'] == 83 else None, axis=1)
 
-    ol_df = ol_df[['eid', 'partid', 'op_ml', 'op_spr', 'op_spr_odds']].groupby(
+    ol_df['op_spr']      = ol_df.apply(lambda r: r['adj'] if r['mtid'] == 401 else None, axis=1)
+    ol_df['op_spr_odds'] = ol_df.apply(lambda r: r['ap']  if r['mtid'] == 401 else None, axis=1)
+
+    ol_df['op_ou']      = ol_df.apply(lambda r: r['adj'] if r['mtid'] == 402 else None, axis=1)
+    ol_df['op_ou_odds'] = ol_df.apply(lambda r: r['ap']  if r['mtid'] == 402 else None, axis=1)
+
+    ol_df = ol_df[['eid', 'partid', 'op_ml', 'op_spr', 'op_spr_odds', 'op_ou', 'op_ou_odds']].groupby(
         ['eid', 'partid'], as_index=False).first()
+
     return ol_df
 
-
 def parse_current_lines(data: dict) -> pd.DataFrame:
-    """Parse A_CL section into bookmaker-specific columns."""
     cl_df = pd.DataFrame(data["data"].get("A_CL", []))
     if cl_df.empty:
         return pd.DataFrame()
 
-    cl_df['ml'] = cl_df.apply(lambda r: r['ap'] if r['mtid'] == 83 else None, axis=1)
-    cl_df['spr_odds'] = cl_df.apply(lambda r: r['ap'] if r['mtid'] == 401 else None, axis=1)
-    cl_df['spr'] = cl_df.apply(lambda r: r['adj'] if r['mtid'] == 401 else None, axis=1)
+    cl_df['ml']        = cl_df.apply(lambda r: r['ap']  if r['mtid'] == 83 else None, axis=1)
+    cl_df['spr']       = cl_df.apply(lambda r: r['adj'] if r['mtid'] == 401 else None, axis=1)
+    cl_df['spr_odds']  = cl_df.apply(lambda r: r['ap']  if r['mtid'] == 401 else None, axis=1)
+    cl_df['ou']        = cl_df.apply(lambda r: r['adj'] if r['mtid'] == 402 else None, axis=1)
+    cl_df['ou_odds']   = cl_df.apply(lambda r: r['ap']  if r['mtid'] == 402 else None, axis=1)
 
     grouped = cl_df.groupby(['eid', 'partid', 'paid']).agg({
-        'ml': 'first', 'spr': 'first', 'spr_odds': 'first'
+        'ml': 'first',
+        'spr': 'first',
+        'spr_odds': 'first',
+        'ou': 'first',
+        'ou_odds': 'first'
     }).reset_index()
 
-    # Pivot so each paid number has its metrics as columns
     pivoted = grouped.pivot(index=['eid', 'partid'], columns='paid')
-    
-    # Flatten MultiIndex columns: "paid_metric"
     pivoted.columns = [f"{paid}_{metric}" for metric, paid in pivoted.columns]
     pivoted.reset_index(inplace=True)
-    
     return pivoted
 
-
 def parse_consensus(data: dict) -> pd.DataFrame:
-    """Parse A_CO section into ml_perc, ml_wag, spr_perc, spr_wag and drop all other columns."""
     co_df = pd.DataFrame(data["data"].get("A_CO", []))
     if co_df.empty:
-        return pd.DataFrame(columns=["eid", "partid", "ml_perc", "ml_wag", "spr_perc", "spr_wag"])
+        return pd.DataFrame(columns=["eid", "partid", "ml_perc", "ml_wag", "spr_perc", "spr_wag", "ou_perc", "ou_wag"])
 
     co_df['ml_perc'] = co_df.apply(lambda r: r['perc'] if r['mtid'] == 83 else None, axis=1)
-    co_df['ml_wag'] = co_df.apply(lambda r: r['wag'] if r['mtid'] == 83 else None, axis=1)
+    co_df['ml_wag']  = co_df.apply(lambda r: r['wag'] if r['mtid'] == 83 else None, axis=1)
+
     co_df['spr_perc'] = co_df.apply(lambda r: r['perc'] if r['mtid'] == 401 else None, axis=1)
-    co_df['spr_wag'] = co_df.apply(lambda r: r['wag'] if r['mtid'] == 401 else None, axis=1)
+    co_df['spr_wag']  = co_df.apply(lambda r: r['wag'] if r['mtid'] == 401 else None, axis=1)
 
-    # Keep only the columns we care about
-    co_df = co_df[['eid', 'partid', 'ml_perc', 'ml_wag', 'spr_perc', 'spr_wag']]
+    co_df['ou_perc'] = co_df.apply(lambda r: r['perc'] if r['mtid'] == 402 else None, axis=1)
+    co_df['ou_wag']  = co_df.apply(lambda r: r['wag'] if r['mtid'] == 402 else None, axis=1)
 
-    # Drop duplicates after grouping
+    co_df = co_df[['eid', 'partid', 'ml_perc', 'ml_wag', 'spr_perc', 'spr_wag', 'ou_perc', 'ou_wag']]
+
     co_df = co_df.groupby(['eid', 'partid']).first().reset_index()
     return co_df
+
 
 # ================================
 # STEP 4: MERGE
 # ================================
 
-def merge_all(meta_df: pd.DataFrame, ol_df: pd.DataFrame, cl_df: pd.DataFrame, co_df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Merge metadata with OL, CL, and CO DataFrames.
-    Join on eid and partid, drop partid in final result.
-    """
-    # Ensure eid is string everywhere
-    meta_df["eid"] = meta_df["eid"].astype(str)
-    ol_df["eid"] = ol_df["eid"].astype(str)
-    cl_df["eid"] = cl_df["eid"].astype(str)
-    co_df["eid"] = co_df["eid"].astype(str)
+def normalize_keys(df):
+    for col in ['eid', 'partid']:
+        if col in df.columns:
+            df[col] = df[col].astype(str)
+    return df
 
-    # Merge odds data first
-    merged = co_df.merge(ol_df, on=['eid', 'partid'], how='outer')
-    merged = merged.merge(cl_df, on=['eid', 'partid'], how='outer')
+def merge_all(meta_df, ol_df, cl_df, co_df):
+    # --- Step 0: Add parity to meta_df ---
+    meta_df['rotation'] = pd.to_numeric(meta_df['rotation'], errors='coerce')
+    meta_df['parity'] = meta_df['rotation'] % 2
 
-    # Merge with metadata
-    merged = meta_df.merge(merged, on=['eid', 'partid'], how='left')
+    # --- Step 1: Split original dfs into ML/SPR-only and OU-only ---
+    def split_ml_spr_ou(df):
+        ou_cols = [c for c in df.columns if 'ou' in c]
+        base_cols = ['eid', 'partid']
+        ml_spr_df = df[[c for c in df.columns if c not in ou_cols]].copy()
+        ou_df = df[ou_cols + base_cols].copy()
+        return ml_spr_df, ou_df
 
-    # Drop partid from final DataFrame
-    if 'partid' in merged.columns:
-        merged = merged.drop(columns=['partid'])
+    ol_df_ml, ol_df_ou = split_ml_spr_ou(ol_df)
+    cl_df_ml, cl_df_ou = split_ml_spr_ou(cl_df)
+    co_df_ml, co_df_ou = split_ml_spr_ou(co_df)
 
-    # Build ordered columns: metadata first
-    ordered_cols = [c for c in meta_df.columns if c != 'partid']
-    ordered_cols += ['ml_perc', 'ml_wag', 'spr_perc', 'spr_wag', 'op_ml', 'op_spr', 'op_spr_odds']
+    # --- Step 2: Add parity to OU dfs ---
+    for df_ in [ol_df_ou, cl_df_ou, co_df_ou]:
+        df_['partid'] = pd.to_numeric(df_['partid'], errors='coerce')
+        df_['parity'] = df_['partid'] % 2
 
-    # Add all paid number columns
-    paid_numbers = sorted(set(int(re.match(r"(\d+)_", c).group(1))
-                              for c in merged.columns if re.match(r"\d+_", c)))
-    for paid in paid_numbers:
-        for suffix in ['ml', 'spr', 'spr_odds']:
-            col_name = f"{paid}_{suffix}"
-            if col_name in merged.columns:
-                ordered_cols.append(col_name)
+    # --- Step 3: Merge ML/SPR columns normally ---
+    merged = meta_df.merge(ol_df_ml, on=['eid', 'partid'], how='left')
+    merged = merged.merge(cl_df_ml, on=['eid', 'partid'], how='left')
+    merged = merged.merge(co_df_ml, on=['eid', 'partid'], how='left')
 
-    # Keep only columns that exist
-    ordered_cols = [c for c in ordered_cols if c in merged.columns]
+    keep_partids = {15143, 15144}
+    co_df_ou = co_df_ou[co_df_ou['partid'].isin(keep_partids)]
+    ol_df_ou = ol_df_ou[ol_df_ou['partid'].isin(keep_partids)]
+    cl_df_ou = cl_df_ou[cl_df_ou['partid'].isin(keep_partids)]
 
-    return merged[ordered_cols]
+
+    # --- Step 4: Merge OU columns using parity ---
+    merged = merged.merge(co_df_ou.drop(columns='partid'), on=['eid', 'parity'], how='left')
+    merged = merged.merge(ol_df_ou.drop(columns='partid'), on=['eid', 'parity'], how='left')
+    merged = merged.merge(cl_df_ou.drop(columns='partid'), on=['eid', 'parity'], how='left')
+
+    # --- Step 5: Drop helper col ---
+    merged.drop(columns='parity', inplace=True)
+
+    # Base metadata columns
+    base_cols = ['eid', 'partid'] + [c for c in meta_df.columns if c not in ['eid', 'partid']]
+
+    # Detect paid IDs numerically
+    paid_ids = sorted({int(col.split('_')[0]) for col in merged.columns if col.split('_')[0].isdigit()})
+
+    # Opening line columns
+    op_cols = ['op_ml', 'op_spr', 'op_spr_odds', 'op_ou', 'op_ou_odds']
+
+    # Consensus columns (placed before OL columns)
+    co_cols = ['ml_perc', 'ml_wag', 'spr_perc', 'spr_wag', 'ou_perc', 'ou_wag']
+
+    # Current line columns grouped by paid ID
+    cl_cols = []
+    for p in paid_ids:
+        cl_cols += [f"{p}_ml", f"{p}_spr", f"{p}_spr_odds", f"{p}_ou", f"{p}_ou_odds"]
+
+    # Build final preferred order
+    preferred_order = base_cols + co_cols + op_cols + cl_cols
+
+    # Keep only existing columns
+    existing_preferred = [c for c in preferred_order if c in merged.columns]
+
+    # Add any extra columns we didn’t explicitly list
+    remaining_cols = [c for c in merged.columns if c not in existing_preferred]
+
+    # Final column order
+    final_order = existing_preferred + remaining_cols
+
+    return merged[final_order]
+    # return cl_df_ou
 
 # ================================
 # STEP 5: ORCHESTRATOR
@@ -265,6 +321,11 @@ def get_weekly_odds(year: int, week: int) -> pd.DataFrame:
     ol_df = parse_opening_lines(odds_json)
     cl_df = parse_current_lines(odds_json)
     co_df = parse_consensus(odds_json)
+
+    meta_df = normalize_keys(meta_df)
+    ol_df   = normalize_keys(ol_df)
+    cl_df   = normalize_keys(cl_df)
+    co_df   = normalize_keys(co_df)
 
     final_df = merge_all(meta_df, ol_df, cl_df, co_df)
 
