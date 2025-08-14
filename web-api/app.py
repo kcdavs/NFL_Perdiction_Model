@@ -320,16 +320,18 @@ def get_weekly_odds(year: int, week: int) -> pd.DataFrame:
 
     return final_df
 
-
 def save_to_github(year, week):
-    df = get_weekly_odds(year, week)
+    df = get_weekly_odds(year, week)  # your existing pipeline
 
-    repo_name = "kcdavs/NFL_Perdiction_Model"  # use owner/repo here for org/user repos
+    repo_name = "kcdavs/NFL_Perdiction_Model"
     path_in_repo = f"data/odds/{year}/week_{week}.csv"
 
     token = os.environ.get("GITHUB_TOKEN")
+    if not token:
+        raise ValueError("GITHUB_TOKEN not found in environment")
+
     g = Github(token)
-    repo = g.get_repo(repo_name)  # use get_repo for full owner/name
+    repo = g.get_repo(repo_name)
 
     csv_buffer = io.StringIO()
     df.to_csv(csv_buffer, index=False)
@@ -344,7 +346,7 @@ def save_to_github(year, week):
             sha=contents.sha
         )
         print(f"Updated {path_in_repo} on GitHub.")
-    except:
+    except UnknownObjectException:
         repo.create_file(
             path_in_repo,
             message=f"Add odds data for {year} week {week}",
@@ -355,8 +357,8 @@ def save_to_github(year, week):
 @app.route("/combined/<int:year>/<int:week>")
 def combined_view(year, week):
     try:
-        df = save_to_github(year, week)
-        return df
+        save_to_github(year, week)
+        return f"<h3>Saved odds data for {year} week {week} to GitHub</h3>"
     except Exception as e:
         return f"<h3>Error: {str(e)}</h3>"
 
