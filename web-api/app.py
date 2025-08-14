@@ -320,11 +320,43 @@ def get_weekly_odds(year: int, week: int) -> pd.DataFrame:
 
     return final_df
 
+
+def save_to_github(year, week):
+    df = get_weekly_odds(year, week)
+
+    repo_name = "kcdavs/NFL_Perdiction_Model"  # use owner/repo here for org/user repos
+    path_in_repo = f"data/odds/{year}/week_{week}.csv"
+
+    token = os.environ.get("GITHUB_TOKEN")
+    g = Github(token)
+    repo = g.get_repo(repo_name)  # use get_repo for full owner/name
+
+    csv_buffer = io.StringIO()
+    df.to_csv(csv_buffer, index=False)
+    csv_bytes = csv_buffer.getvalue().encode()
+
+    try:
+        contents = repo.get_contents(path_in_repo)
+        repo.update_file(
+            path_in_repo,
+            message=f"Update odds data for {year} week {week}",
+            content=csv_bytes,
+            sha=contents.sha
+        )
+        print(f"Updated {path_in_repo} on GitHub.")
+    except:
+        repo.create_file(
+            path_in_repo,
+            message=f"Add odds data for {year} week {week}",
+            content=csv_bytes
+        )
+        print(f"Created {path_in_repo} on GitHub.")
+
 @app.route("/combined/<int:year>/<int:week>")
 def combined_view(year, week):
     try:
-        df = get_weekly_odds(year, week)
-        return df.to_html(classes="table table-striped", index=False)
+        df = save_to_github(year, week)
+        return df
     except Exception as e:
         return f"<h3>Error: {str(e)}</h3>"
 
