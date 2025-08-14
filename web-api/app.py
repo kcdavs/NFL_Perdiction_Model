@@ -10,18 +10,7 @@ import base64
 import re
 
 app = Flask(__name__)
-from flask import Flask, Response, request
-import requests
-from bs4 import BeautifulSoup
-import pandas as pd
-from urllib.parse import urlparse, parse_qs
-import json
-import tempfile
-import os
-import base64
-import re
 
-app = Flask(__name__)
 # ================================
 # CONFIGURATION: SEID & EGID MAPPING
 # ================================
