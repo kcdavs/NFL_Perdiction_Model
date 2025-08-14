@@ -10,7 +10,6 @@ import base64
 import re
 
 app = Flask(__name__)
-
 # ================================
 # CONFIGURATION: SEID & EGID MAPPING
 # ================================
@@ -146,16 +145,16 @@ def fetch_odds_json(eids: list) -> dict:
 # ================================
 
 def parse_opening_lines(data: dict) -> pd.DataFrame:
-    """Parse A_OL section into op_ml_odds, op_spr, op_spr_odds."""
+    """Parse A_OL section into op_ml, op_spr, op_spr_odds."""
     ol_df = pd.DataFrame(data["data"].get("A_OL", []))
     if ol_df.empty:
         return pd.DataFrame(columns=["eid", "partid", "op_ml_odds", "op_spr", "op_spr_odds"])
 
-    ol_df['op_ml_odds'] = ol_df.apply(lambda r: r['ap'] if r['mtid'] == 83 else None, axis=1)
+    ol_df['op_ml'] = ol_df.apply(lambda r: r['ap'] if r['mtid'] == 83 else None, axis=1)
     ol_df['op_spr'] = ol_df.apply(lambda r: r['adj'] if r['mtid'] == 401 else None, axis=1)
     ol_df['op_spr_odds'] = ol_df.apply(lambda r: r['ap'] if r['mtid'] == 401 else None, axis=1)
 
-    ol_df = ol_df[['eid', 'partid', 'op_ml_odds', 'op_spr', 'op_spr_odds']].groupby(
+    ol_df = ol_df[['eid', 'partid', 'op_ml', 'op_spr', 'op_spr_odds']].groupby(
         ['eid', 'partid'], as_index=False).first()
     return ol_df
 
@@ -174,14 +173,18 @@ def parse_current_lines(data: dict) -> pd.DataFrame:
         'ml': 'first', 'spr': 'first', 'spr_odds': 'first'
     }).reset_index()
 
+    # Pivot so each paid number has its metrics as columns
     pivoted = grouped.pivot(index=['eid', 'partid'], columns='paid')
+    
+    # Flatten MultiIndex columns: "paid_metric"
     pivoted.columns = [f"{paid}_{metric}" for metric, paid in pivoted.columns]
     pivoted.reset_index(inplace=True)
+    
     return pivoted
 
 
 def parse_consensus(data: dict) -> pd.DataFrame:
-    """Parse A_CO section into ml_perc, ml_wag, spr_perc, spr_wag."""
+    """Parse A_CO section into ml_perc, ml_wag, spr_perc, spr_wag and drop all other columns."""
     co_df = pd.DataFrame(data["data"].get("A_CO", []))
     if co_df.empty:
         return pd.DataFrame(columns=["eid", "partid", "ml_perc", "ml_wag", "spr_perc", "spr_wag"])
@@ -191,26 +194,43 @@ def parse_consensus(data: dict) -> pd.DataFrame:
     co_df['spr_perc'] = co_df.apply(lambda r: r['perc'] if r['mtid'] == 401 else None, axis=1)
     co_df['spr_wag'] = co_df.apply(lambda r: r['wag'] if r['mtid'] == 401 else None, axis=1)
 
-    grouped = co_df.groupby(['eid', 'partid']).first().reset_index()
-    return grouped
+    # Keep only the columns we care about
+    co_df = co_df[['eid', 'partid', 'ml_perc', 'ml_wag', 'spr_perc', 'spr_wag']]
 
+    # Drop duplicates after grouping
+    co_df = co_df.groupby(['eid', 'partid']).first().reset_index()
+    return co_df
 
 # ================================
 # STEP 4: MERGE
 # ================================
 
 def merge_all(ol_df: pd.DataFrame, cl_df: pd.DataFrame, co_df: pd.DataFrame) -> pd.DataFrame:
-    """Merge OL, CL, and CO DataFrames into a final dataset."""
+    """
+    Merge OL, CL, and CO DataFrames and order columns so each paid group is together:
+    For each paid number: ml, spr, spr_odds.
+    """
+    # Merge all three
     merged = co_df.merge(ol_df, on=['eid', 'partid'], how='outer')
     merged = merged.merge(cl_df, on=['eid', 'partid'], how='outer')
 
-    op_cols = [c for c in merged.columns if c.startswith('op_')]
-    exclude = ['eid', 'partid', 'ml_perc', 'ml_wag', 'spr_perc', 'spr_wag'] + op_cols
-    cl_cols = [c for c in merged.columns if c not in exclude]
+    # Start with IDs and consensus
+    ordered_cols = ['eid', 'partid', 'ml_perc', 'ml_wag', 'spr_perc', 'spr_wag',
+                    'op_ml', 'op_spr', 'op_spr_odds']
 
-    ordered_cols = ['eid', 'partid', 'ml_perc', 'ml_wag', 'spr_perc', 'spr_wag'] + op_cols + cl_cols
+    # Find all the "paid" numbers from CL columns
+    paid_numbers = sorted(set(int(re.match(r"(\d+)_", c).group(1))
+                              for c in merged.columns if re.match(r"\d+_", c)))
+
+    # For each paid number, append its ml, spr, spr_odds columns in order
+    for paid in paid_numbers:
+        for suffix in ['ml', 'spr', 'spr_odds']:
+            col_name = f"{paid}_{suffix}"
+            if col_name in merged.columns:
+                ordered_cols.append(col_name)
+
+    # Reorder merged DataFrame
     return merged[ordered_cols]
-
 
 # ================================
 # STEP 5: ORCHESTRATOR
