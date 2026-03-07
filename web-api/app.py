@@ -129,7 +129,7 @@ def fetch_odds_json(eids: list) -> dict:
         f"{{ eid mtid boid partid sbid paid lineid wag perc vol tvol sequence tim }} "
         f"}}"
     )
-    url = "https://ms.production-us-east-1.bookmakersreview.com/ms-odds-v2/odds-v2-service?query=" + query
+    url = "https://ms.virginia-us-east-1.bookmakersreview.com/ms-odds-v2/odds-v2-service?query=" + query
     headers = {
         "User-Agent": "Mozilla/5.0",
         "Accept": "application/json",
