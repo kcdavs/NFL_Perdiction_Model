@@ -368,11 +368,7 @@ def combined_view(year, week):
 def odds_view(year, week):
     try:
         df = get_weekly_odds(year, week)
-        return Response(
-            df.to_csv(index=False),
-            mimetype="text/csv",
-            headers={"Content-Disposition": "attachment; filename=odds.csv"}
-        )
+        return df.to_html(index=False)
     except Exception as e:
         return f"<h3>Error: {str(e)}</h3>"
 
