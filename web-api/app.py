@@ -364,6 +364,18 @@ def combined_view(year, week):
     except Exception as e:
         return f"<h3>Error: {str(e)}</h3>"
 
+@app.route("/odds/<int:year>/<int:week>")
+def odds_view(year, week):
+    try:
+        df = get_weekly_odds(year, week)
+        return Response(
+            df.to_csv(index=False),
+            mimetype="text/csv",
+            headers={"Content-Disposition": "attachment; filename=odds.csv"}
+        )
+    except Exception as e:
+        return f"<h3>Error: {str(e)}</h3>"
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 3000))
     app.run(host="0.0.0.0", port=port)
