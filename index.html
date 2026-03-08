@@ -172,18 +172,26 @@
       yearSelect.appendChild(opt);
     });
 
-    function populateWeeks(max) {
+    const PLAYOFFS = ["Wild Card", "Divisional", "Conference Championship", "Super Bowl"];
+
+    function populateWeeks(year) {
+      const regularSeasonWeeks = year <= 2020 ? 17 : 18;
+      const maxWeeks = year <= 2020 ? 21 : 22;
+      const prevWeek = weekSelect.value;
       weekSelect.innerHTML = "";
-      for (let w = 1; w <= max; w++) {
+      for (let w = 1; w <= maxWeeks; w++) {
         const opt = document.createElement("option");
         opt.value = w;
-        opt.textContent = w <= 18 ? `Week ${w}` : ["", "Wild Card", "Divisional", "Conference", "Super Bowl"][w - 18];
+        opt.textContent = w <= regularSeasonWeeks ? `Week ${w}` : PLAYOFFS[w - regularSeasonWeeks - 1];
         weekSelect.appendChild(opt);
       }
+      weekSelect.value = Math.min(prevWeek, maxWeeks);
     }
 
-    populateWeeks(22);
+    populateWeeks(yearSelect.value);
     weekSelect.value = 1;
+
+    yearSelect.addEventListener("change", () => populateWeeks(parseInt(yearSelect.value)));
 
     function setStatus(msg, isError = false) {
       const el = document.getElementById("status");
