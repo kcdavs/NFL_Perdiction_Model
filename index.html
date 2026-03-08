@@ -223,14 +223,14 @@
     }
 
     function buildTable(rows) {
-      const cols = DISPLAY_COLS.filter(c => rows[0] && c.key in rows[0]);
+      const cols = Object.keys(rows[0]);
       let html = "<table><thead><tr>";
-      cols.forEach(c => { html += `<th>${c.label}</th>`; });
+      cols.forEach(c => { html += `<th>${c}</th>`; });
       html += "</tr></thead><tbody>";
       rows.forEach((row, i) => {
         const cls = Math.floor(i / 2) % 2 === 0 ? "game-a" : "game-b";
         html += `<tr class="${cls}">`;
-        cols.forEach(c => { html += `<td>${renderCell(c.key, row[c.key])}</td>`; });
+        cols.forEach(c => { html += `<td>${renderCell(c, row[c])}</td>`; });
         html += "</tr>";
       });
       html += "</tbody></table>";
