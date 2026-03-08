@@ -25,6 +25,8 @@ jobs:
           import subprocess
           import time
 
+          import os
+
           # Weeks per year: 2018-2020 had 21 weeks (no week 18), 2021+ have 22
           schedule = {
             2018: 21,
@@ -34,10 +36,15 @@ jobs:
             2022: 22,
             2023: 22,
             2024: 22,
+            2025: 22,
           }
 
           for year, max_week in schedule.items():
               for week in range(1, max_week + 1):
+                  path = f"data/odds/{year}/week_{week}.csv"
+                  if os.path.exists(path):
+                      print(f"--- {year} Week {week} SKIPPED (already exists) ---", flush=True)
+                      continue
                   print(f"--- {year} Week {week} ---", flush=True)
                   result = subprocess.run(
                       ["python", "scrapers/lines_scraper/scrape.py", str(year), str(week)],
