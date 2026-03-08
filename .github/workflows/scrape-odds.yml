@@ -1,0 +1,40 @@
+name: Scrape NFL Odds
+
+on:
+  workflow_dispatch:
+    inputs:
+      year:
+        description: "NFL season year (e.g. 2024)"
+        required: true
+        default: "2024"
+      week:
+        description: "Week number (1-22)"
+        required: true
+        default: "1"
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install requests beautifulsoup4 pandas
+
+      - name: Run scraper
+        run: python scrapers/lines_scraper/scrape.py ${{ inputs.year }} ${{ inputs.week }}
+
+      - name: Commit and push CSV
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/odds/
+          git diff --cached --quiet || git commit -m "Add odds data for ${{ inputs.year }} week ${{ inputs.week }}"
+          git push
