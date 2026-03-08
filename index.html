@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>NFL Odds Viewer</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Segoe UI', Arial, sans-serif;
+      background: #0d1117;
+      color: #e6edf3;
+      min-height: 100vh;
+      padding: 32px 20px;
+    }
+
+    h1 {
+      font-size: 28px;
+      font-weight: 700;
+      color: #58a6ff;
+      margin-bottom: 6px;
+    }
+
+    .subtitle {
+      color: #8b949e;
+      font-size: 13px;
+      margin-bottom: 28px;
+    }
+
+    .controls {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      margin-bottom: 24px;
+      flex-wrap: wrap;
+    }
+
+    label { color: #8b949e; font-size: 13px; margin-right: 4px; }
+
+    select {
+      background: #161b22;
+      color: #e6edf3;
+      border: 1px solid #30363d;
+      border-radius: 6px;
+      padding: 8px 12px;
+      font-size: 14px;
+      cursor: pointer;
+      outline: none;
+    }
+
+    select:hover { border-color: #58a6ff; }
+
+    button {
+      background: #238636;
+      color: white;
+      border: none;
+      border-radius: 6px;
+      padding: 8px 20px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    button:hover { background: #2ea043; }
+
+    #status {
+      font-size: 13px;
+      color: #8b949e;
+      margin-bottom: 16px;
+      min-height: 18px;
+    }
+
+    #status.error { color: #f85149; }
+
+    .table-wrapper {
+      overflow-x: auto;
+      border-radius: 8px;
+      border: 1px solid #30363d;
+    }
+
+    table {
+      border-collapse: collapse;
+      width: 100%;
+      font-size: 13px;
+    }
+
+    thead th {
+      background: #161b22;
+      color: #8b949e;
+      padding: 10px 14px;
+      text-align: left;
+      white-space: nowrap;
+      border-bottom: 1px solid #30363d;
+      font-weight: 600;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    tbody td {
+      padding: 9px 14px;
+      white-space: nowrap;
+      border-bottom: 1px solid #21262d;
+    }
+
+    tbody tr.game-a td { background: #0d1117; }
+    tbody tr.game-b td { background: #161b22; }
+
+    .team-name { font-weight: 600; }
+    .score     { font-weight: 700; color: #58a6ff; }
+    .outcome   { color: #8b949e; font-size: 12px; }
+    .pos       { color: #3fb950; }
+    .neg       { color: #f85149; }
+
+    .pct-bar-wrap { display: flex; align-items: center; gap: 6px; }
+    .pct-bar { height: 6px; border-radius: 3px; background: #58a6ff; min-width: 2px; }
+  </style>
+</head>
+<body>
+
+  <h1>NFL Odds Viewer</h1>
+  <p class="subtitle">Opening lines and public betting percentages — data from BookmakersReview</p>
+
+  <div class="controls">
+    <div>
+      <label for="yearSelect">Season</label>
+      <select id="yearSelect"></select>
+    </div>
+    <div>
+      <label for="weekSelect">Week</label>
+      <select id="weekSelect"></select>
+    </div>
+    <button onclick="loadData()">Load</button>
+  </div>
+
+  <div id="status"></div>
+  <div class="table-wrapper" id="tableWrapper"></div>
+
+  <script>
+    const REPO_RAW = "https://raw.githubusercontent.com/kcdavs/NFL_Perdiction_Model/main/data/odds";
+
+    const YEARS = [2025, 2024, 2023, 2022, 2021, 2020, 2019, 2018];
+
+    const DISPLAY_COLS = [
+      { key: "team",                 label: "Team" },
+      { key: "date",                 label: "Date" },
+      { key: "time",                 label: "Time" },
+      { key: "score",                label: "Score" },
+      { key: "outcome",              label: "Status" },
+      { key: "opening_spread",       label: "Open Spread" },
+      { key: "opening_spread_odds",  label: "Spread Odds" },
+      { key: "opening_moneyline",    label: "Open ML" },
+      { key: "opening_total",        label: "Open Total" },
+      { key: "opening_total_odds",   label: "Total Odds" },
+      { key: "spread_bet_pct",       label: "Spread Bet %" },
+      { key: "spread_dollar_pct",    label: "Spread $ %" },
+      { key: "moneyline_bet_pct",    label: "ML Bet %" },
+      { key: "moneyline_dollar_pct", label: "ML $ %" },
+      { key: "total_bet_pct",        label: "Total Bet %" },
+      { key: "total_dollar_pct",     label: "Total $ %" },
+    ];
+
+    const yearSelect = document.getElementById("yearSelect");
+    const weekSelect = document.getElementById("weekSelect");
+
+    YEARS.forEach(y => {
+      const opt = document.createElement("option");
+      opt.value = y;
+      opt.textContent = y;
+      yearSelect.appendChild(opt);
+    });
+
+    function populateWeeks(max) {
+      weekSelect.innerHTML = "";
+      for (let w = 1; w <= max; w++) {
+        const opt = document.createElement("option");
+        opt.value = w;
+        opt.textContent = w <= 18 ? `Week ${w}` : ["", "Wild Card", "Divisional", "Conference", "Super Bowl"][w - 18];
+        weekSelect.appendChild(opt);
+      }
+    }
+
+    populateWeeks(22);
+    weekSelect.value = 1;
+
+    function setStatus(msg, isError = false) {
+      const el = document.getElementById("status");
+      el.textContent = msg;
+      el.className = isError ? "error" : "";
+    }
+
+    function fmt(val, type) {
+      if (val === "" || val == null) return "—";
+      const n = parseFloat(val);
+      if (isNaN(n)) return val || "—";
+
+      if (type === "odds" || type === "spread") {
+        return n > 0
+          ? `<span class="pos">+${n}</span>`
+          : `<span class="neg">${n}</span>`;
+      }
+      if (type === "pct") {
+        const w = Math.min(Math.round(n), 100);
+        return `<div class="pct-bar-wrap">
+          <div class="pct-bar" style="width:${w}px"></div>
+          <span>${n.toFixed(1)}%</span>
+        </div>`;
+      }
+      return val;
+    }
+
+    function renderCell(key, val) {
+      if (key === "team")    return `<span class="team-name">${val || "—"}</span>`;
+      if (key === "score")   return val ? `<span class="score">${val}</span>` : "—";
+      if (key === "outcome") return `<span class="outcome">${val || "—"}</span>`;
+      if (key === "opening_spread") return fmt(val, "spread");
+      if (key.includes("moneyline") && !key.includes("pct")) return fmt(val, "odds");
+      if (key.includes("odds"))  return fmt(val, "odds");
+      if (key.includes("pct"))   return fmt(val, "pct");
+      return val || "—";
+    }
+
+    function buildTable(rows) {
+      const cols = DISPLAY_COLS.filter(c => rows[0] && c.key in rows[0]);
+      let html = "<table><thead><tr>";
+      cols.forEach(c => { html += `<th>${c.label}</th>`; });
+      html += "</tr></thead><tbody>";
+      rows.forEach((row, i) => {
+        const cls = Math.floor(i / 2) % 2 === 0 ? "game-a" : "game-b";
+        html += `<tr class="${cls}">`;
+        cols.forEach(c => { html += `<td>${renderCell(c.key, row[c.key])}</td>`; });
+        html += "</tr>";
+      });
+      html += "</tbody></table>";
+      return html;
+    }
+
+    function loadData() {
+      const year = yearSelect.value;
+      const week = weekSelect.value;
+      const url  = `${REPO_RAW}/${year}/week_${week}.csv`;
+
+      setStatus("Loading...");
+      document.getElementById("tableWrapper").innerHTML = "";
+
+      Papa.parse(url, {
+        download: true,
+        header: true,
+        skipEmptyLines: true,
+        complete(results) {
+          if (!results.data || results.data.length === 0) {
+            setStatus(`No data found for ${year} Week ${week}.`, true);
+            return;
+          }
+          setStatus(`${year} — Week ${week} — ${results.data.length} rows`);
+          document.getElementById("tableWrapper").innerHTML = buildTable(results.data);
+        },
+        error() {
+          setStatus(`No data file found for ${year} Week ${week}. Run the scraper first.`, true);
+        }
+      });
+    }
+
+    loadData();
+  </script>
+</body>
+</html>
